@@ -109,6 +109,7 @@ default = [
     "io-uring",
     "lzma-rust2",
     "notify",
+    "quicklook",
     "wayland",
     "wgpu",
 ]
@@ -119,6 +120,12 @@ gvfs = ["dep:gio", "dep:glib"]
 io-uring = ["compio/io-uring"]
 jemalloc = ["dep:tikv-jemallocator"]
 notify = ["dep:notify-rust"]
+# macOS Quick Look previews. No effect on other platforms: every dependency it enables is
+# declared only for macOS, so the feature resolves to nothing elsewhere.
+quicklook = [
+    "dep:objc2-quick-look-thumbnailing",
+    "dep:objc2-uniform-type-identifiers",
+]
 wayland = ["libcosmic/wayland", "dep:cctk", "dep:wayland-client"]
 wgpu = ["libcosmic/wgpu"]
 
@@ -135,6 +142,57 @@ uzers = "0.12.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18"
+
+# Objective-C bindings for the platform integrations in src/*_macos.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+# Trackpad gestures come from an NSEvent monitor (see src/gesture_macos.rs); the window colour
+# space is set through NSView/NSWindow, and the application lifecycle goes through
+# NSApplication and NSNotificationCenter (see src/appkit_macos.rs).
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "bitflags",
+    "block2",
+    "objc2-core-foundation",
+    "NSApplication",
+    "NSColorSpace",
+    "NSEvent",
+    "NSMenu",
+    "NSMenuItem",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "NSDictionary",
+    "NSError",
+    "NSGeometry",
+    # The system language a Finder launch does not pass in (src/launch_macos.rs).
+    "NSLocale",
+    "NSNotification",
+    "NSObject",
+    "NSOperation",
+    "NSString",
+    "NSURL",
+    "NSUserDefaults",
+] }
+objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = [
+    "std",
+    "bitflags",
+    "block2",
+    "objc2-core-foundation",
+    "objc2-uniform-type-identifiers",
+    "QLThumbnailGenerationRequest",
+    "QLThumbnailGenerator",
+], optional = true }
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = [
+    "std",
+    "UTCoreTypes",
+    "UTType",
+], optional = true }
 
 [build-dependencies]
 xdgen = "0.1"

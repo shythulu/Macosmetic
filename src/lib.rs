@@ -13,14 +13,21 @@ use crate::config::{Config, State};
 use crate::tab::Location;
 
 pub mod app;
+#[cfg(target_os = "macos")]
+pub(crate) mod appkit_macos;
 mod archive;
 pub mod channel;
 pub mod clipboard;
 pub mod config;
 mod context_action;
 pub mod dialog;
+mod gesture;
+#[cfg(target_os = "macos")]
+pub(crate) mod gesture_macos;
 mod key_bind;
 pub(crate) mod large_image;
+#[cfg(target_os = "macos")]
+mod launch_macos;
 pub(crate) mod load_image;
 mod localize;
 mod menu;
@@ -29,6 +36,8 @@ pub mod mime_icon;
 mod mounter;
 mod mouse_area;
 pub mod operation;
+#[cfg(all(target_os = "macos", feature = "quicklook"))]
+pub(crate) mod quicklook_macos;
 mod spawn_detached;
 pub mod tab;
 mod thumbnail_cacher;
@@ -95,6 +104,9 @@ pub fn desktop() -> Result<(), Box<dyn std::error::Error>> {
         .with(log_layer)
         .init();
 
+    #[cfg(target_os = "macos")]
+    appkit_macos::disable_autofill_heuristics();
+
     localize::localize();
 
     let (config_handler, config) = Config::load();
@@ -143,6 +155,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::EnvFilter::from_default_env())
         .with(log_layer)
         .init();
+
+    #[cfg(target_os = "macos")]
+    {
+        appkit_macos::disable_autofill_heuristics();
+        // Closing the last window leaves the application in the Dock; this is how it hears
+        // about the click that asks for a window back.
+        appkit_macos::watch_activation();
+    }
+
+    #[cfg(target_os = "macos")]
+    launch_macos::prepare();
 
     localize::localize();
 

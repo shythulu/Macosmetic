@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist template for "COSMIC Files.app". scripts/macos-bundle.sh substitutes
+  @SHORT_VERSION@ with the version from Cargo.toml and writes the result to
+  Contents/Info.plist.
+
+  Every key here is load-bearing; see docs/macos-porting-notes.md section 5.2.
+  LSRequiresCarbon and CSResourcesFileMapped are deliberately absent.
+-->
+<plist version="1.0">
+<dict>
+	<!-- Identity. CFBundleIdentifier is the key TCC privacy grants attach to
+	     (porting notes 4.1): changing it resets every grant the user has given. -->
+	<key>CFBundleIdentifier</key>
+	<string>com.system76.CosmicFiles</string>
+	<key>CFBundleName</key>
+	<string>COSMIC Files</string>
+	<key>CFBundleDisplayName</key>
+	<string>COSMIC Files</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@SHORT_VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@SHORT_VERSION@</string>
+
+	<!-- Payload. CFBundleExecutable must match the file in Contents/MacOS;
+	     CFBundleIconFile names Contents/Resources/cosmic-files.icns. -->
+	<key>CFBundleExecutable</key>
+	<string>cosmic-files</string>
+	<key>CFBundleIconFile</key>
+	<string>cosmic-files</string>
+
+	<!-- Appearance. Without NSHighResolutionCapable the bundle runs 1x
+	     magnified and everything looks blurry; this is bundle-only behaviour,
+	     so it cannot be reproduced with `cargo run`. NSRequiresAquaSystemAppearance
+	     NO opts in to the system dark mode. -->
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSRequiresAquaSystemAppearance</key>
+	<false/>
+
+	<!-- Platform floor, matching the LC_BUILD_VERSION minos of the aarch64
+	     binary. Apple Silicon starts at macOS 11. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+
+	<!-- Privacy usage descriptions. Without them a TCC-gated read is silently
+	     denied with no prompt and no System Settings entry, so there is no way
+	     for the user to grant access afterwards either; see porting notes 4.2.
+	     Each string is what the prompt shows, so it says why a file manager is
+	     asking. There is no key for Full Disk Access, which is what ~/.Trash
+	     needs: the Trash view detects the denial and links to the Privacy pane
+	     instead. -->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>COSMIC Files needs access to your Desktop folder to list, open and manage the files stored there.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>COSMIC Files needs access to your Documents folder to list, open and manage the files stored there.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>COSMIC Files needs access to your Downloads folder to list, open and manage the files stored there.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>COSMIC Files needs access to removable volumes to browse USB drives, memory cards and other external disks.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>COSMIC Files needs access to network volumes to browse file shares you have mounted.</string>
+
+	<!-- Folder handling: what puts the app in Finder's "Open With" menu for a
+	     folder. public.folder is what Finder reports for an ordinary folder and
+	     public.directory also covers packages and other directory-shaped items.
+	     LSHandlerRank is Alternate rather than Owner so Finder stays the
+	     default handler and this app is offered beside it; see porting notes
+	     5.2. A folder is opened for browsing, never edited, hence Viewer. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Folder</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+				<string>public.directory</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
