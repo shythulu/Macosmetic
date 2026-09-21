@@ -1,22 +1,9 @@
-# macosmic-files
-File manager for the COSMIC desktop environment ported to MacOS I guess.
-My hatred for finder brought me to this.
+# Macosmetic
+File manager for the COSMIC desktop environment ported to MacOS I guess. There were options, but this one is rust, which is apparently like magic or something.
+My hatred for finder brought me to this. If only I could be rid of chooser too... who even gives something like chooser a rubber stamp. Hot. Garbage.
 
 
-## Build the project from source
-
-```sh
-# Clone the project using `git`
-git clone https://github.com/pop-os/cosmic-files
-# Change to the directory that was created by `git`
-cd cosmic-files
-# Build an optimized version using `cargo`, this may take a while
-cargo build --release
-# Run the optimized version using `cargo`
-cargo run --release
-```
-
-## Community and Contributing
+## Source
 
 The COSMIC desktop environment is maintained by System76 for use in Pop!_OS. A list of all COSMIC projects can be found in the
 [cosmic-epoch](https://github.com/pop-os/cosmic-epoch) project's README. If you would like to discuss COSMIC and Pop!_OS, please
