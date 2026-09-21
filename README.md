@@ -1,5 +1,7 @@
 # macosmic-files
-File manager for the COSMIC desktop environment
+File manager for the COSMIC desktop environment ported to MacOS I guess.
+My hatred for finder brought me to this.
+
 
 ## Build the project from source
 
