@@ -1,4 +1,4 @@
-# cosmic-files
+# macosmic-files
 File manager for the COSMIC desktop environment
 
 ## Build the project from source
