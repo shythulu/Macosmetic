@@ -13,8 +13,9 @@ Every libcosmic path below is relative to the **pinned revision
 `~/.local/share/cargo/git/checkouts/libcosmic-41009aea1d72760b/d9431dc/`. Note that
 `CARGO_HOME` on this machine is `~/.local/share/cargo`, not `~/.cargo`.
 
-`cosmic-settings` and `cosmic-settings-daemon` are not vendored here; those claims were
-read from raw files on `master` (fetched 2026-09-21) and are marked as such.
+`cosmic-settings`, `cosmic-settings-daemon`, `cosmic-initial-setup` and the third-party
+projects in §4.5 are not vendored here; those claims were read from raw files on `master`
+(fetched 2026-09-21) and are marked as such.
 
 ---
 
@@ -25,29 +26,35 @@ read from raw files on `master` (fetched 2026-09-21) and are marked as such.
 `cosmic-settings` binary, in a private module (`src/pages/desktop/appearance/`), and none
 of it is exported as a library.
 
-**And there is no theme catalog to pick from.** COSMIC does not have "installed themes" in
-the GTK/Qt sense. It has exactly two slots — `com.system76.CosmicTheme.Light` and
-`com.system76.CosmicTheme.Dark` — each derived from an editable `ThemeBuilder`. A
-"third-party theme" is a single `.ron` file holding a serialized `ThemeBuilder` that the
-user imports through a file chooser. There is no install directory, no discovery pass, no
-manifest. (The one directory scan in that module is for freedesktop *icon* themes, which
-is a different thing.)
+**But a theme catalog does exist — twice — just not in libcosmic or cosmic-settings.**
+Two directory conventions are live today, and both are already populated by third parties:
 
-So the split is:
+| Convention | Read by | Path | Naming |
+|---|---|---|---|
+| First-party | `pop-os/cosmic-initial-setup` | `/usr/share/cosmic-themes/*.ron` (NixOS: `/run/current-system/sw/share/cosmic-themes/`) | display name = file stem, `-`→space, title-cased; preview = sibling `<stem>.png`; dark iff stem ends `dark` |
+| Community | `cosmic-utils/tweaks` | `$XDG_DATA_HOME/themes/cosmic/`, each `$XDG_DATA_DIRS/themes/cosmic/`, `/usr/local/share/themes/cosmic/`, `/usr/share/themes/cosmic/` | display name = file stem |
+
+Both store the same payload: **one `.ron` file holding a serialized
+`cosmic_theme::ThemeBuilder`**, which is also exactly what cosmic-settings' Import/Export
+round-trips. **[V]** — see §4.5.
+
+So the accurate split is:
 
 - **Applying a theme to our own process:** fully supported public API today
   (`cosmic::command::set_theme`, `cosmic::theme::Theme::custom`, `ThemeBuilder::build`).
   Nothing to write.
-- **Enumerating themes:** does not exist anywhere, not even in cosmic-settings. We would
-  define what a "theme" is for us.
+- **Enumerating themes:** no API in libcosmic and no catalog in cosmic-settings — **[V]**,
+  `"cosmic-themes"` returns zero hits in either repo — but the *file format and the
+  directory layout are already settled by convention* (§4.5), so we adopt rather than
+  invent. The scanner itself we still write; it is about forty lines.
 - **Editing a theme:** `ThemeBuilder`'s builder methods are public, but the staging /
   diff-only-write machinery around them (`theme_manager::Manager`) is cosmic-settings
   private code.
 
 **And on macOS the existing `AppTheme` setting is currently a no-op.** All three of
 Dark/Light/System resolve to `cosmic-dark`, because the `com.system76.CosmicTheme.*`
-config stores are empty on a machine with no COSMIC desktop, and libcosmic's fallback for
-an empty store is `Theme::default()` → `preferred_theme()` → `dark_default()`. **[V] ran a
+config stores are empty on a machine with no COSMIC desktop — on a real install they are
+filled by a package (§4.5) — and libcosmic's fallback for an empty store is `Theme::default()` → `preferred_theme()` → `dark_default()`. **[V] ran a
 probe here** — see §6.4. That bug, not the picker, is the thing worth fixing first.
 
 ---
@@ -107,15 +114,17 @@ The picker is `cosmic-settings/src/pages/desktop/appearance/`, a module tree ins
 
 Two things matter for us:
 
-1. **It is not a theme list.** The page's controls are: Light/Dark buttons, an auto-switch
-   toggle, an accent-colour palette, background/text/control tint pickers, corner
-   roundness presets, density, fonts, frosted glass. `ContextView` in `mod.rs` enumerates
-   exactly those drawers (`AccentWindowHint, ApplicationBackground, ContainerBackground,
-   ControlComponent, FrostedGlass, ShadowAndCorners, CustomAccent, IconsAndToolkit,
-   InterfaceText, MonospaceFont, SystemFont`). The only `read_dir` in the tree is
-   `icon_themes::fetch()`, which walks `$XDG_DATA_HOME/.local/share/icons` and each
+1. **It is not a theme list — in *this* app.** The page's controls are: Light/Dark buttons,
+   an auto-switch toggle, an accent-colour palette, background/text/control tint pickers,
+   corner roundness presets, density, fonts, frosted glass. `ContextView` in `mod.rs`
+   enumerates exactly those drawers (`AccentWindowHint, ApplicationBackground,
+   ContainerBackground, ControlComponent, FrostedGlass, ShadowAndCorners, CustomAccent,
+   IconsAndToolkit, InterfaceText, MonospaceFont, SystemFont`). The only `read_dir` in the
+   tree is `icon_themes::fetch()`, which walks `$XDG_DATA_HOME/.local/share/icons` and each
    `$XDG_DATA_DIRS/icons` looking for freedesktop `index.theme` manifests — icon themes,
-   not colour themes. **[V]**
+   not colour themes. A search of `pop-os/cosmic-settings` for `"cosmic-themes"` returns
+   zero hits, so it does not know about the catalog directory that its sibling
+   `cosmic-initial-setup` scans (§4.5). **[V]**
 
    Worth knowing: the call site that kicks that off in `Page::on_enter()` is currently
    **commented out** upstream. Whether that is dead code, a regression or deliberate is
@@ -127,6 +136,12 @@ Two things matter for us:
    `accent_palette` bootstrap — is a private module inside a binary crate. So is the
    `commands.rs` CLI `import_theme`/`export_theme`. A third-party app gets none of it.
    **[V]**
+
+There is no standalone COSMIC theme editor either. `pop-os/cosmic-theme-editor` was
+archived on 2024-02-08 and is an unmodified GTK4/Meson/Flatpak boilerplate — its README is
+still the template's — depending on `pop-os/cosmic-theme`, itself archived 2023-05-22 with
+a one-line `# WIP` README. Both predate the `cosmic-theme` crate now living inside
+libcosmic. **[V]**
 
 ### 3.3 cosmic-settings-daemon owns the side effects
 
@@ -240,25 +255,44 @@ only v2 is current. System defaults come from `find_data_file` over XDG data dir
 (i.e. `/usr/share/cosmic/...`), or `%CommonProgramFiles%\COSMIC\...` on Windows
 (`lib.rs:192-198`). **[V]**
 
-### 4.3 "Installing" a theme
+### 4.3 cosmic-settings' own import/export: a bare file round-trip
 
-There is no install path. cosmic-settings' import/export is a file chooser plus a RON
-round-trip of one `ThemeBuilder`:
+cosmic-settings has no install path of its own. Its import/export is a portal file chooser
+plus a RON round-trip of one `ThemeBuilder`:
 
 ```rust
-// cosmic-settings .../appearance/mod.rs (upstream master)
+// cosmic-settings/src/pages/desktop/appearance/mod.rs:323-341 (upstream master)
 Message::StartImport => file_chooser::open::Dialog::new().modal(true)
     .filter(FileFilter::glob(FileFilter::new("ron"), "*.ron")).open_file().await,
-Message::ImportFile(f) => ron::de::from_str::<ThemeBuilder>(&s),
-Message::ExportFile(f) => ron::ser::to_string_pretty(&theme_builder, PrettyConfig::default()),
+// :345-352
+Message::StartExport => {
+    let is_dark = self.theme_manager.mode().is_dark;
+    let name = format!("{}.ron", if is_dark { fl!("dark") } else { fl!("light") });
+    file_chooser::save::Dialog::new().modal(true).file_name(name).save_file().await
+}
+// :383  import is literally this, with no validation:
+ron::de::from_str(&s)
 ```
 
-and a CLI equivalent in `commands.rs` (`import_theme`/`export_theme`). Import writes the
-deserialized builder to the matching `*.Builder` store and `builder.build()` to the
-matching output store. The default export filename is `light.ron` / `dark.ron`. The file
-can live anywhere the user picks. **[V]** upstream `master`.
+Three things to note, all **[V]** against `mod.rs` as fetched:
 
-The import/export buttons are behind `#[cfg(feature = "xdg-portal")]`.
+- **No default directory.** `file_name("dark.ron")` sets a suggested *filename* only; there
+  is no `current_folder` call, so the portal opens wherever it last was. cosmic-settings
+  does not point at `/usr/share/cosmic-themes/` or `themes/cosmic/`.
+- **No validation and no user-visible error.** A file that fails `ron::de` produces a
+  `tracing::error!` and a `Message::ImportError` that returns `Task::none()`. The source
+  carries a `// TODO Error toast?` on both paths.
+- Import writes the deserialized builder to the matching `*.Builder` store and
+  `builder.build()` to the matching output store, then flips `ThemeMode.is_dark` to match
+  `builder.palette.is_dark()`.
+
+The buttons are behind `#[cfg(feature = "xdg-portal")]` (`mod.rs:709-710`). There is a CLI
+equivalent in `commands.rs` (`import_theme`/`export_theme`).
+
+This is why every community theme gallery's README says the same thing — e.g.
+`KodeBarista/cosmic-themes`: *"Open Cosmic Settings. Navigate to Desktop > Appearance.
+Import desired theme file."* The manual import is the baseline; the catalogs in §4.5 are
+what the rest of the ecosystem built on top of it.
 
 ### 4.4 Change notification
 
@@ -282,6 +316,142 @@ Three mechanisms, in preference order:
 
 `Core::watch_config` picks 1 if the daemon proxy is present *and* we are on Linux, else 2
 (`src/core.rs:386-405`). **[V]**
+
+### 4.5 How themes are delivered on a real install
+
+Three delivery layers exist. None of them is libcosmic's.
+
+**(a) The system-default config layer, `/usr/share/cosmic/`.** This is a deliberate,
+packaged extension point, not an accident of `find_data_file`. `cosmic-settings` ships the
+default themes itself:
+
+```
+# cosmic-settings/justfile:8,35
+default-schema-target := usrdir / 'share' / 'cosmic'
+    cd resources/default_schema && find * -type f -exec install -Dm0644 '{}' '{{default-schema-target}}/{}' \;
+
+# cosmic-settings/debian/install:37-41
+/usr/share/cosmic/com.system76.CosmicTheme.Dark
+/usr/share/cosmic/com.system76.CosmicTheme.Dark.Builder
+/usr/share/cosmic/com.system76.CosmicTheme.Light
+/usr/share/cosmic/com.system76.CosmicTheme.Light.Builder
+/usr/share/cosmic/com.system76.CosmicTheme.Mode
+```
+
+`resources/default_schema/com.system76.CosmicTheme.Light/v2/` holds 37 files — `accent`,
+`background`, `is_dark`, `name`, `palette`, `spacing`, … — byte-for-byte the same
+one-file-per-field layout documented in §4.2. **[V]** The `.Builder/v2/` tree holds the 20
+builder inputs, and `.Mode/v1/` holds `auto_switch` and `is_dark`. The same
+`default_schema` → `/usr/share/cosmic` pattern is used by `cosmic-panel` and
+`cosmic-applets`. **[V]**
+
+So **the empty `com.system76.CosmicTheme.*` directories on this Mac are empty precisely
+because we do not install cosmic-settings** — that package is what fills them. §6.1's
+suggestion of shipping the same tree in `Contents/Resources/share` is doing exactly what
+the distro package does. **[V]** mechanism; **[I]** that it works from inside the bundle.
+
+**(b) The first-party theme catalog, `/usr/share/cosmic-themes/`.** Read by
+`pop-os/cosmic-initial-setup` (active; a cosmic-epoch component), `src/page/appearance.rs`:
+
+```rust
+// :105-108
+#[cfg(feature = "nixos")]
+let themes_dir_path = "/run/current-system/sw/share/cosmic-themes/";
+#[cfg(not(feature = "nixos"))]
+let themes_dir_path = "/usr/share/cosmic-themes/";
+if let Ok(directory) = std::fs::read_dir(themes_dir_path) {
+// :112-114  skip anything whose extension is not "ron"
+// :133      ron::de::from_bytes::<ThemeBuilder>(&buffer[..read])
+// :134-143  name    = file stem, '-' -> ' ', to_title_case()
+//           is_dark = name.ends_with("dark")
+//           preview = widget::image::Handle::from_path(path.with_extension("png"))
+```
+
+It seeds the list with `ThemeBuilder::dark()` / `ThemeBuilder::light()` as *"COSMIC Dark"*
+and *"COSMIC Light"* (`:89-101`), sorts the discovered ones into a `BTreeSet` by name, and
+on selection writes `builder.write_entry(builder_config)`, `theme.write_entry(theme_config)`
+and `set("is_dark", …)` into the shared stores (`:195-210`). **[V] fetched and read here.**
+
+Third parties already ship into it — `tiiuae/ghaf`,
+`modules/common/theming/cosmic/default.nix:84,97-101`:
+
+```nix
+themesDir="$out/share/cosmic-themes"
+install -m0644 ${cfg.theme.dark}  "$themesDir/ghaf-dark.ron"
+install -m0644 ${cfg.theme.light} "$themesDir/ghaf-light.ron"
+install -m0644 ${pkgs.ghaf-artwork}/1600px-Ghaf_logo.png "$themesDir/ghaf-dark.png"
+```
+
+and NixOS's COSMIC module links the path for every package
+(`nixos/modules/services/desktop-managers/cosmic.nix:76`: `"/share/cosmic-themes"` in
+`environment.pathsToLink`). **[V]**
+
+**(c) The community catalog, `themes/cosmic/` + cosmic-themes.org.** `cosmic-utils/tweaks`
+("Cosmic Tweaks", on Flathub as `dev.edfloreshz.CosmicTweaks`, active) is the de-facto
+theme browser. `src/app/pages/color_schemes/storage.rs`:
+
+```rust
+// :45-48
+pub fn cosmic_theme_dir() -> anyhow::Result<PathBuf> {
+    let dir = dirs::data_local_dir()?.join("themes/cosmic");
+// :99-100
+    let path = cosmic_theme_dir()?.join(&theme.name).with_extension("ron");
+// :113-131  search path, in order:
+//   dirs::data_local_dir()/themes/cosmic
+//   each $XDG_DATA_DIRS entry + /themes/cosmic
+//   /usr/local/share/themes/cosmic
+//   /usr/share/themes/cosmic
+```
+
+and it fills that directory from a live JSON API:
+`GET https://cosmic-themes.org/api/themes/?limit=…`, each row carrying the theme's RON
+inline. **[V] fetched here: HTTP 200, JSON array with `id, uuid, name, ron, author, link,
+downloads, created, updated`.** The site is a solo Django project
+(`Fingel/cosmic-themes-org-py`); it has no install instructions of its own beyond a
+"Download Theme" button, and no URL-scheme handoff into cosmic-settings.
+
+Neither libcosmic nor cosmic-settings reads either catalog directory. **[V]** — zero hits
+for `"cosmic-themes"` in `pop-os/libcosmic` and `pop-os/cosmic-settings`, and no
+`themes/cosmic` either.
+
+### 4.6 What a theme file actually contains, and how stable it is
+
+A theme file is a serialized `cosmic_theme::ThemeBuilder` — no header, no version marker,
+no name field. A real one, `Fingel/cosmic-theme-collection/gruvbox-dark.ron` (285 lines):
+
+```ron
+(
+    palette: Dark((
+        name: "cosmic-dark",
+        blue: ( red: 0.58, green: 0.92, blue: 0.92, alpha: 1.0 ),
+        …
+    )),
+    spacing: ( … ),  corner_radii: ( … ),
+    neutral_tint: Some(( red: 0.235, green: 0.219, blue: 0.211 )),
+    bg_color: Some(( … )),  accent: Some(( … )),
+    is_frosted: false,
+    gaps: (0, 8),  active_hint: 3,
+)
+```
+
+Two compatibility facts, both **[V]** against the pinned `cosmic-theme`:
+
+- **Colours are readable in three encodings.** `ColorRepr` is `#[serde(untagged)]` over
+  `Hex(HexColor)` / `Rgba(Srgba)` / `Rgb(Srgb)` (`cosmic-theme/src/model/color.rs:9-16`),
+  so the struct form above *and* the `"#00525AFF"` hex strings that cosmic-settings ships
+  in `default_schema` both deserialize. Serialization always writes hex. This is a
+  deliberate back-compat shim.
+- **Old files still load.** `is_frosted` no longer exists on the pinned `ThemeBuilder` (it
+  became `frosted: BlurStrength`); serde ignores the unknown field, and `frosted`,
+  `frosted_windows`, `frosted_system_interface`, `frosted_panel`, `frosted_applets`,
+  `frosted_maximized_apps` and `alpha_map` all carry `#[serde(default)]`
+  (`cosmic-theme/src/model/theme.rs:902-919`). The non-defaulted fields — `palette`,
+  `spacing`, `corner_radii`, `gaps`, `active_hint` and the colour `Option`s — are all
+  present in the old files, so they parse.
+
+`ThemeBuilder` is `#[version = 2]` as a *cosmic-config* entry, but that version lives in
+the config directory name, not in the `.ron` file. A standalone `.ron` carries no version
+at all, so a loader can only report "failed to parse", never "too old". **[V]**
 
 ---
 
@@ -366,8 +536,9 @@ then `.build()` then `cosmic::command::set_theme(Theme::custom(Arc::new(built)))
 
 ### 5.5 Not provided, anywhere
 
-- Enumerating themes. **[V]** — no such code in libcosmic; no such concept in
-  cosmic-settings either.
+- Enumerating themes. **[V]** — libcosmic has no such API, and cosmic-settings implements
+  no catalog. The catalogs that exist (§4.5) live in `cosmic-initial-setup` and in
+  third-party tooling, each with its own private scanner; neither is exposed as a library.
 - Naming a theme beyond the `Theme::name: String` field (`cosmic-theme/src/model/theme.rs:52`),
   which is set by `ThemeBuilder::build()` and never surfaced in a picker.
 - Thumbnails / previews of a theme.
@@ -481,17 +652,30 @@ second is a two-line change in `src/config.rs` and has no packaging cost.
 
 To ship an in-app theme picker we would have to write:
 
-1. **A definition of "a theme".** Upstream has none. The obvious one costs nothing:
-   *a theme is a `.ron` file containing a serialized `ThemeBuilder`*, which is already the
-   cosmic-settings import/export format, so our files and theirs interoperate for free.
-   The only thing `ThemeBuilder` lacks is a display name — `Theme::name` is derived by
-   `build()`, not authored. Either use the filename as the display name or carry a
-   sidecar. (Also: `ThemeBuilder` is `#[version = 2]`; a bare `.ron` file has no version
-   marker, so an older or newer file fails `ron::de` with no useful message. Our loader
-   should say so.)
-2. **Discovery.** A directory scan, because nothing upstream does one. Somewhere under our
-   own config/data dir plus the bundle's `Contents/Resources`, with the built-ins from
-   `ThemeBuilder::{light, dark, light_high_contrast, dark_high_contrast}()` always present.
+1. **A loader for the established theme file format.** We do not get to define this and we
+   should not try: a theme is a `.ron` file holding a serialized `ThemeBuilder`, which is
+   what cosmic-settings exports, what cosmic-themes.org serves, what `cosmic-initial-setup`
+   reads and what Catppuccin ships. `ron::de::from_str::<ThemeBuilder>(&s)?` then `.build()`
+   is the whole loader. What we add is the error reporting cosmic-settings does not have
+   (§4.3) — a `.ron` that fails to parse must say so in the UI, not in a log line.
+
+   Two conventions we inherit rather than invent (§4.5): the display name is the file stem
+   (`cosmic-initial-setup` additionally does `'-' -> ' '` + title-case), and light/dark is
+   inferred from a `-dark` / `-light` suffix. There is no name or version inside the file,
+   so both are filename-derived by necessity, not by choice. **[V]**
+2. **Discovery over the two existing directory conventions**, because no library does it
+   for us. Concretely, in order: `$XDG_DATA_HOME/themes/cosmic/` and each
+   `$XDG_DATA_DIRS/themes/cosmic/` (the `cosmic-utils/tweaks` convention — on macOS this is
+   what our bundle launcher's `XDG_DATA_DIRS` already reaches), then
+   `/usr/share/cosmic-themes/` (the `cosmic-initial-setup` convention, Linux-only in
+   practice), then our own `$CONFIG/cosmic/com.system76.CosmicFiles/themes/`, with
+   `ThemeBuilder::{light, dark, light_high_contrast, dark_high_contrast}()` always present
+   as built-ins. Sibling `<stem>.png` previews are free if we want them later.
+
+   Following the community path means a user who already installed themes with Cosmic
+   Tweaks sees them in cosmic-files with no extra step — on Linux and, because it is
+   XDG-based, on macOS too. **[I]** — the paths are verified, the end-to-end experience is
+   not.
 3. **The picker UI.** `widget::dropdown` for a one-line change, or a grid of swatches
    rendered from each candidate's `accent_color()` / `bg_color()` / `on_bg_color()` if we
    want previews. Both are ordinary libcosmic widgets; nothing special is needed.
@@ -555,15 +739,19 @@ stating. **[I]** — not tested.
 
 Search path, first match wins:
 
-1. `$CONFIG/cosmic/com.system76.CosmicFiles/themes/*.ron`
-   (i.e. `~/Library/Application Support/cosmic/com.system76.CosmicFiles/themes` on macOS)
-2. `<bundle>/Contents/Resources/share/cosmic-files/themes/*.ron`, and on Linux each
-   `$XDG_DATA_DIRS/cosmic-files/themes`
-3. the four compiled-in builders
+1. `$CONFIG/cosmic/com.system76.CosmicFiles/themes/*.ron` — ours
+   (`~/Library/Application Support/cosmic/com.system76.CosmicFiles/themes` on macOS)
+2. `$XDG_DATA_HOME/themes/cosmic/*.ron`, then each `$XDG_DATA_DIRS/themes/cosmic/*.ron`
+   — the Cosmic Tweaks convention (§4.5c). Our bundle launcher already puts
+   `Contents/Resources/share` first in `XDG_DATA_DIRS` (`src/launch_macos.rs:100-112`), so
+   bundled themes drop into `Contents/Resources/share/themes/cosmic/`.
+3. `/usr/share/cosmic-themes/*.ron` — the `cosmic-initial-setup` convention (§4.5b),
+   Linux only
+4. the four compiled-in builders
 
 Note this is *not* a cosmic-config store: cosmic-config's one-file-per-field layout is
 wrong for a list of documents. A plain directory of `.ron` files read with `ron::de` is
-the right tool, and it is what cosmic-settings' import already produces.
+both the right tool and the established one.
 
 ### 8.3 UI surface
 
@@ -656,4 +844,52 @@ nothing into the real config directory.
 Fetched via `raw.githubusercontent.com` and the GitHub contents API. Nothing was written,
 commented on or filed anywhere upstream.
 
-**No secondary sources were used.**
+**Packaging / system defaults (upstream, read-only, `master`, fetched 2026-09-21):**
+- https://github.com/pop-os/cosmic-settings/blob/master/justfile (lines 8, 35, 42)
+- https://github.com/pop-os/cosmic-settings/blob/master/debian/install (lines 37-41)
+- https://github.com/pop-os/cosmic-settings/tree/master/resources/default_schema — and
+  `.../com.system76.CosmicTheme.Light/v2/`, `.../com.system76.CosmicTheme.Light.Builder/v2/`,
+  `.../com.system76.CosmicTheme.Mode/v1/`
+- https://github.com/pop-os/cosmic-panel/blob/master/README.md (the `default_schema` →
+  `$HOME/.config/cosmic` pattern)
+
+**First-party theme catalog:**
+- https://raw.githubusercontent.com/pop-os/cosmic-initial-setup/master/src/page/appearance.rs
+  (lines 89-155 scanner, 169-215 apply) — **fetched and re-verified in this session**
+- https://github.com/pop-os/cosmic-epoch (component list includes `cosmic-initial-setup`)
+- https://raw.githubusercontent.com/tiiuae/ghaf/main/modules/common/theming/cosmic/default.nix
+  (lines 80-101)
+- https://raw.githubusercontent.com/NixOS/nixpkgs/master/nixos/modules/services/desktop-managers/cosmic.nix
+  (line 76)
+
+**Community catalog and tooling:**
+- https://github.com/cosmic-utils/tweaks — `src/app/pages/color_schemes/storage.rs`
+  (lines 45-48, 99-100, 113-131) — **fetched and re-verified in this session**
+- https://cosmic-themes.org and its API `https://cosmic-themes.org/api/themes/?limit=N`
+  — **verified live in this session: HTTP 200, RON payloads inline**
+- https://github.com/Fingel/cosmic-themes-org-py · https://github.com/Fingel/cosmic-theme-tools
+  · https://github.com/Fingel/cosmic-theme-collection (`gruvbox-dark.ron`)
+- https://github.com/catppuccin/cosmic-desktop — README "Usage → COSMIC Desktop
+  Appearance", and `themes/cosmic-settings/*.ron`
+- https://github.com/KodeBarista/cosmic-themes · https://github.com/cosmic-utils/cosmic-ext-themes
+
+**cosmic-settings import/export:**
+- https://raw.githubusercontent.com/pop-os/cosmic-settings/master/cosmic-settings/src/pages/desktop/appearance/mod.rs
+  (lines 322-341, 345-365, 369-390, 709-710)
+
+**Dead ends:**
+- https://github.com/pop-os/cosmic-theme-editor (archived 2024-02-08) ·
+  https://github.com/pop-os/cosmic-theme (archived 2023-05-22)
+
+**Additionally flagged unverified:**
+- That themes installed via Cosmic Tweaks would be picked up end-to-end by a cosmic-files
+  scanner on macOS — the paths are verified, the experience is not.
+- Whether `cosmic-initial-setup`'s `-dark` suffix rule is documented anywhere, or is only
+  implicit in the code. No doc found; the only evidence is ghaf and
+  `Fingel/cosmic-theme-collection` following it.
+- The one-off `install.sh` scripts in individual theme repos that reportedly copy `.ron`
+  straight into `~/.config/cosmic/...Builder/v2/` — only their existence is confirmed via
+  code search, not deep-read.
+
+**No secondary sources were used. No issues, pull requests or comments were opened
+anywhere; all upstream access was read-only.**
