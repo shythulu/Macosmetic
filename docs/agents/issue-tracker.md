@@ -11,7 +11,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 
-This clone has two remotes: `origin` is the fork `shythulu/cosmic-files`, where issues live, and `upstream` is `pop-os/cosmic-files`. Pass `--repo shythulu/cosmic-files` to every `gh issue` and `gh label` command; do not rely on inference, and never create issues or labels on upstream.
+This clone has two remotes: `origin` is the fork `shythulu/Macosmetic`, where issues live, and `upstream` is `pop-os/cosmic-files`. Pass `--repo shythulu/Macosmetic` to every `gh issue` and `gh label` command; do not rely on inference, and never create issues or labels on upstream.
 
 ## Pull requests as a triage surface
 

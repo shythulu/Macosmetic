@@ -169,6 +169,17 @@ pub const fn close_window_outcome(
     }
 }
 
+/// The command that opens the Trash in a new window of this same executable.
+///
+/// It has to be this executable rather than a bare `cosmic-files`: inside a macOS bundle the
+/// binary lives in `Contents/MacOS` and is not on `PATH`, so looking it up by name fails.
+pub fn open_trash_command(exe: &Path) -> process::Command {
+    //TODO: use handler for x-scheme-handler/trash and open trash:///
+    let mut command = process::Command::new(exe);
+    command.arg("--trash");
+    command
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
     About,
@@ -803,6 +814,8 @@ pub struct App {
     pinch: crate::gesture::Pinch,
     #[cfg(target_os = "macos")]
     swipe: crate::gesture::Swipe,
+    #[cfg(target_os = "macos")]
+    zoom: crate::gesture::Zoom,
     must_save_sort_names: bool,
     network_drive_connecting: Option<(MounterKey, String)>,
     network_drive_input: String,
@@ -2530,6 +2543,8 @@ impl Application for App {
             pinch: crate::gesture::Pinch::default(),
             #[cfg(target_os = "macos")]
             swipe: crate::gesture::Swipe::default(),
+            #[cfg(target_os = "macos")]
+            zoom: crate::gesture::Zoom::default(),
             nav_bar_context_id: segmented_button::Entity::null(),
             nav_model: segmented_button::ModelBuilder::default().build(),
             tab_model: segmented_button::ModelBuilder::default().build(),
@@ -3581,14 +3596,28 @@ impl Application for App {
             }
             #[cfg(target_os = "macos")]
             Message::Scroll(scroll) => {
+                let mut tasks = Vec::new();
                 // A two-finger swipe walks the active tab's history, as it does in Finder.
                 if let Some(direction) = self.swipe.feed(scroll) {
                     let tab_message = match direction {
                         crate::gesture::Direction::Back => tab::Message::GoPrevious,
                         crate::gesture::Direction::Forward => tab::Message::GoNext,
                     };
-                    return self.update(Message::TabMessage(None, tab_message));
+                    tasks.push(self.update(Message::TabMessage(None, tab_message)));
                 }
+                // Ctrl+scroll zooms. AppKit's events carry logical points and say outright
+                // which of them are momentum, so the tab's pixel path is left idle here and
+                // no idle timer is needed to cut the tail of a flick off.
+                if self.modifiers.control() {
+                    let steps = self.zoom.feed(scroll);
+                    let message = if steps > 0 {
+                        Message::ZoomIn(None)
+                    } else {
+                        Message::ZoomOut(None)
+                    };
+                    tasks.extend((0..steps.abs()).map(|_| self.update(message.clone())));
+                }
+                return Task::batch(tasks);
             }
             Message::ModifiersChanged(window_id, modifiers) => {
                 #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
@@ -4758,17 +4787,17 @@ impl Application for App {
                                 log::error!("failed to get current executable path: {err}");
                             }
                         },
-                        tab::Command::OpenTrash => {
-                            //TODO: use handler for x-scheme-handler/trash and open trash:///
-                            let mut command = process::Command::new("cosmic-files");
-                            command.arg("--trash");
-                            match spawn_detached(&mut command) {
+                        tab::Command::OpenTrash => match env::current_exe() {
+                            Ok(exe) => match spawn_detached(&mut open_trash_command(&exe)) {
                                 Ok(()) => {}
                                 Err(err) => {
-                                    log::warn!("failed to run cosmic-files --trash: {err}");
+                                    log::warn!("failed to run {} --trash: {err}", exe.display());
                                 }
+                            },
+                            Err(err) => {
+                                log::error!("failed to get current executable path: {err}");
                             }
-                        }
+                        },
                         tab::Command::Preview(kind) => {
                             self.context_page = ContextPage::Preview(Some(entity), kind);
                             self.set_show_context(true);
@@ -7316,7 +7345,9 @@ impl Application for App {
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseOutcome, close_window_outcome};
+    use super::{CloseOutcome, close_window_outcome, open_trash_command};
+    use std::ffi::OsStr;
+    use std::path::Path;
 
     const MACOS: bool = true;
     const ELSEWHERE: bool = false;
@@ -7348,6 +7379,18 @@ mod tests {
         assert_eq!(
             close_window_outcome(ELSEWHERE, 2, NOT_A_QUIT),
             CloseOutcome::CloseWindow
+        );
+    }
+
+    #[test]
+    fn opening_the_trash_runs_this_executable_rather_than_one_found_on_the_path() {
+        let exe = Path::new("/Applications/COSMIC Files.app/Contents/MacOS/cosmic-files");
+        let command = open_trash_command(exe);
+
+        assert_eq!(command.get_program(), exe.as_os_str());
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![OsStr::new("--trash")]
         );
     }
 
