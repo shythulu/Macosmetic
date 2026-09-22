@@ -8,7 +8,7 @@ Nothing moves from this fork to upstream `pop-os/cosmic-files`. Never push to th
 
 ### Issue tracker
 
-Issues live on GitHub in the fork `shythulu/cosmic-files`, not upstream `pop-os/cosmic-files`. See `docs/agents/issue-tracker.md`.
+Issues live on GitHub in the fork `shythulu/Macosmetic`, not upstream `pop-os/cosmic-files`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
