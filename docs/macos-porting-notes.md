@@ -300,8 +300,9 @@ is not there.
 The `Info.plist` comes from the template `res/macos/Info.plist.in`, which carries
 everything from 5.2 that is settled today and marks where the privacy usage strings and
 `CFBundleDocumentTypes` go. Only `@SHORT_VERSION@` is substituted, from the Cargo.toml
-version. `LSMinimumSystemVersion` is 11.0, matching the `LC_BUILD_VERSION` `minos` of the
-aarch64 binary.
+version. `LSMinimumSystemVersion` is 26.0: only the current macOS release and later are
+supported. That is stricter than the `LC_BUILD_VERSION` `minos` of the aarch64 binary
+(11.0, the toolchain default), and Launch Services enforces the higher of the two.
 
 `CFBundleIdentifier` is `com.system76.CosmicFiles` — the same string the config directory
 already uses, and **the key every TCC privacy grant attaches to**. Changing it resets
@@ -358,8 +359,9 @@ expensive error message to debug. The tests assert no symlink in the bundle dang
   child, and the value would otherwise grow one copy per generation.
 - `LANG`, when neither it nor `LC_ALL` is set, is built from `NSLocale`'s `languageCode`
   and `countryCode` as `xx_YY.UTF-8`. `countryCode` is deprecated in favour of
-  `regionCode`, but `regionCode` is macOS 13 and `LSMinimumSystemVersion` is 11.0, where
-  sending it would be an unrecognised selector. Note that the *UI language* does not
+  `regionCode`, but `regionCode` is macOS 13 and this was written when
+  `LSMinimumSystemVersion` was 11.0, where sending it would be an unrecognised selector.
+  With the floor now 26.0, `regionCode` is safe to switch to. Note that the *UI language* does not
   depend on this: `i18n-embed`'s desktop requester uses `sys-locale`, which on Apple
   platforms reads `CFLocaleCopyPreferredLanguages` and ignores the environment entirely.
   `LANG` is what `LOCALE` in `src/localize.rs` reads, and that drives date and number
