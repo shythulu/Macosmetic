@@ -652,7 +652,7 @@ pub fn menu_bar<'a>(
                         menu_button_optional(delete_item, delete_item_action, selected > 0),
                         menu::Item::Divider,
                         menu::Item::Button(fl!("close-tab"), None, Action::TabClose),
-                        menu::Item::Button(fl!("quit"), None, Action::WindowClose),
+                        menu::Item::Button(fl!("quit"), None, Action::Quit),
                     ],
                 ),
                 (

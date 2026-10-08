@@ -15,7 +15,9 @@
 //! The rest is the application lifecycle a Mac app is expected to have.
 //! [`hide_application`] is what Cmd+H does everywhere else, and [`watch_activation`] notices
 //! the application being brought to the front — a click on the Dock icon, most of all — so that
-//! a window can be put back after the last one was closed.
+//! a window can be put back after the last one was closed. [`route_quit_menu_item`] sends the
+//! Quit menu item, and with it Cmd+Q, to the application, so that a quit waits for the copies
+//! and moves still running.
 //!
 //! Reaching the `NSWindow` means going out through `raw_window_handle` to the `NSView` iced
 //! draws into, which is what [`with_ns_window`] wraps: it hands a live `NSWindow` to a closure
@@ -23,8 +25,8 @@
 //! into us synchronously, so nothing in here may touch application state.
 
 use std::ptr::NonNull;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 use block2::RcBlock;
 use cosmic::iced::futures::{self, StreamExt, channel::mpsc};
@@ -32,8 +34,9 @@ use cosmic::iced::runtime::window::raw_window_handle::RawWindowHandle;
 use cosmic::iced::runtime::window::run_with_handle;
 use cosmic::iced::window::Id as WindowId;
 use cosmic::iced::{Subscription, Task};
-use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, sel};
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, NSObject};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationDidBecomeActiveNotification, NSColorSpace, NSMenu, NSView, NSWindow,
 };
@@ -130,57 +133,114 @@ pub fn activation_subscription() -> Subscription<Activated> {
     })
 }
 
-/// Set once the Quit item has been unbound, so the repeat calls cost nothing.
-static QUIT_KEY_RELEASED: AtomicBool = AtomicBool::new(false);
+/// A Quit menu item was chosen, or its Cmd+Q pressed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QuitRequested;
 
-/// Take Cmd+Q off the Quit item in the application menu that winit installs.
+/// The Quit item's channel: the sending end for [`QuitTarget`], and the receiving end parked
+/// until the subscription starts. It exists from first use rather than from
+/// [`route_quit_menu_item`], because the subscription starts before there is a window, and so
+/// before the menu can be rerouted; a receiver created later would never be picked up.
+static QUIT_CHANNEL: LazyLock<(
+    mpsc::UnboundedSender<QuitRequested>,
+    Mutex<Option<mpsc::UnboundedReceiver<QuitRequested>>>,
+)> = LazyLock::new(|| {
+    let (tx, rx) = mpsc::unbounded();
+    (tx, Mutex::new(Some(rx)))
+});
+
+/// Set once the Quit item has been rerouted, so the repeat calls cost nothing.
+static QUIT_ROUTED: AtomicBool = AtomicBool::new(false);
+
+define_class!(
+    /// The target the Quit menu item sends its action to, in place of `NSApplication`.
+    // SAFETY: `NSObject` has no subclassing requirements, and `QuitTarget` does not implement
+    // `Drop`.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "MacosmeticQuitTarget"]
+    struct QuitTarget;
+
+    impl QuitTarget {
+        #[unsafe(method(requestQuit:))]
+        fn request_quit(&self, _sender: Option<&AnyObject>) {
+            // AppKit calls this while the application may already be borrowed, so handing the
+            // request to the subscription is all this may do.
+            let _ = QUIT_CHANNEL.0.unbounded_send(QuitRequested);
+        }
+    }
+);
+
+impl QuitTarget {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        // SAFETY: `init` is `NSObject`'s designated initialiser.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Point the Quit item in the application menu that winit installs at
+/// [`crate::app::Message::Quit`], through [`quit_subscription`].
 ///
-/// That item sends `terminate:`, which ends the process where it stands; a copy or move still
-/// running would be lost with it. AppKit matches a menu item's key equivalent before the key
-/// reaches the window, so while the shortcut sits on that item the binding table never sees
-/// Cmd+Q. Unbound, the key arrives as any other does and quits through
-/// [`crate::app::Action::Quit`], which waits for the pending operations first.
+/// Left alone, the item sends `terminate:`, which ends the process where it stands; a copy or
+/// move still running would be lost with it. The item keeps its Cmd+Q, so the shortcut works
+/// the way it does in any Mac app: with no window open, and while a text field has focus,
+/// neither of which a binding on the window can see.
 ///
 /// Call once a window exists: winit builds the menu while the event loop is starting, which is
 /// after anything `main` can do.
-pub fn release_quit_key_equivalent() {
-    if QUIT_KEY_RELEASED.load(Ordering::Relaxed) {
+pub fn route_quit_menu_item() {
+    if QUIT_ROUTED.load(Ordering::Relaxed) {
         return;
     }
     let Some(mtm) = MainThreadMarker::new() else {
-        log::warn!("not unbinding Cmd+Q: not on the main thread");
+        log::warn!("not rerouting Quit: not on the main thread");
         return;
     };
+    QUIT_ROUTED.store(true, Ordering::Relaxed);
     let Some(menu) = NSApplication::sharedApplication(mtm).mainMenu() else {
-        log::info!("no application menu, so nothing holds Cmd+Q");
-        QUIT_KEY_RELEASED.store(true, Ordering::Relaxed);
+        log::warn!("no application menu, so no Quit item to reroute");
         return;
     };
-    let unbound = unbind_terminate(&menu);
-    log::info!("unbound Cmd+Q from {unbound} Quit menu item(s)");
-    QUIT_KEY_RELEASED.store(true, Ordering::Relaxed);
+
+    let target = QuitTarget::new(mtm);
+    let routed = route_terminate(&menu, &target);
+    // A menu item holds its target weakly, and the target is wanted for the life of the
+    // process, so it is leaked rather than tracked.
+    std::mem::forget(target);
+    log::info!("routed {routed} Quit menu item(s) to the application");
 }
 
-/// Clear the key equivalent of every `terminate:` item in `menu` and its submenus, and report
-/// how many there were.
-fn unbind_terminate(menu: &NSMenu) -> usize {
-    let mut unbound = 0;
+/// Send every `terminate:` item in `menu` and its submenus to `target` instead, and report how
+/// many there were.
+fn route_terminate(menu: &NSMenu, target: &QuitTarget) -> usize {
+    let mut routed = 0;
     for item in &menu.itemArray() {
         if let Some(submenu) = item.submenu() {
-            unbound += unbind_terminate(&submenu);
+            routed += route_terminate(&submenu, target);
         }
-        log::debug!(
-            "menu item {:?} action {:?} key {:?}",
-            item.title(),
-            item.action(),
-            item.keyEquivalent()
-        );
-        if item.action() == Some(sel!(terminate:)) && !item.keyEquivalent().is_empty() {
-            item.setKeyEquivalent(ns_string!(""));
-            unbound += 1;
+        if item.action() == Some(sel!(terminate:)) {
+            let target: &AnyObject = target;
+            // SAFETY: `target` implements `requestQuit:` with the `(id sender)` signature a menu
+            // item action takes, and is kept alive for the rest of the process.
+            unsafe {
+                item.setTarget(Some(target));
+                item.setAction(Some(sel!(requestQuit:)));
+            }
+            routed += 1;
         }
     }
-    unbound
+    routed
+}
+
+/// Deliver the Quit item's requests as messages. Yields nothing until [`route_quit_menu_item`]
+/// has rerouted the item.
+pub fn quit_subscription() -> Subscription<QuitRequested> {
+    Subscription::run(|| {
+        // The receiver is taken once; a restarted subscription gets an empty stream.
+        let rx = QUIT_CHANNEL.1.lock().unwrap().take();
+        futures::stream::iter(rx).flatten()
+    })
 }
 
 /// Set once the window's colour space has been pinned, so the repeat calls that come with

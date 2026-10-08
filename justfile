@@ -51,7 +51,7 @@ clean-dist: clean clean-vendor
 
 # Compiles with debug profile
 build-debug *args:
-    cargo build {{args}}
+    cargo build --features linux {{args}}
     cargo build --package {{applet-name}} {{args}}
     cargo build --package {{thumbnailer-bin-name}} {{args}}
 
@@ -75,12 +75,12 @@ dev *args:
 
 # Run with debug logs
 run *args:
-    cargo build --release
+    cargo build --release --features linux
     env RUST_LOG=cosmic_files=debug RUST_BACKTRACE=full {{bin-src}} {{args}}
 
 # Run tests
 test *args:
-    cargo test {{args}}
+    cargo test --features linux {{args}}
 
 flamegraph *args:
     cargo flamegraph --release --bin cosmic-files -- --no-daemon {{args}}
