@@ -355,6 +355,7 @@ match-desktop = Match desktop
 dark = Dark
 light = Light
 icon-theme = Icons
+icon-themes = Icon themes
 
 ### Type to search
 type-to-search = Type to search

@@ -69,6 +69,7 @@ use crate::dialog::{
 };
 use crate::folder_appearance::FolderAppearance;
 use crate::folder_look::{self, FolderLook};
+use crate::icon_theme_gallery;
 use crate::icon_themes::{self, IconThemeInfo};
 use crate::key_bind::key_binds_with_overrides;
 use crate::localize::LANGUAGE_SORTER;
@@ -585,6 +586,7 @@ pub enum ContextPage {
     About,
     EditHistory,
     FolderAppearance,
+    IconThemes,
     NetworkDrive,
     Preview(Option<Entity>, PreviewKind),
     Settings,
@@ -824,7 +826,8 @@ pub struct App {
     app_themes: Vec<String>,
     /// Installed icon themes for the settings list, and their display names.
     icon_themes: Vec<IconThemeInfo>,
-    icon_theme_labels: Vec<String>,
+    /// Each installed theme's preview strip for the gallery, parallel to `icon_themes`.
+    icon_theme_previews: Vec<Vec<widget::icon::Handle>>,
     /// The icon theme the app's icons were last built with.
     icon_theme: String,
     folder_appearance: Option<FolderAppearance>,
@@ -2379,15 +2382,17 @@ impl App {
                     ))
                 })
                 .add({
-                    let selected = self
+                    let name = self
                         .icon_themes
                         .iter()
-                        .position(|theme| theme.id == self.icon_theme);
-                    settings::item::builder(fl!("icon-theme")).control(widget::dropdown(
-                        &self.icon_theme_labels,
-                        selected,
-                        Message::IconTheme,
-                    ))
+                        .find(|theme| theme.id == self.icon_theme)
+                        .map_or(self.icon_theme.as_str(), |theme| theme.name.as_str());
+                    settings::item::builder(fl!("icon-theme"))
+                        .description(name)
+                        .control(
+                            widget::button::standard(fl!("browse"))
+                                .on_press(Message::ToggleContextPage(ContextPage::IconThemes)),
+                        )
                 })
                 .into(),
             settings::section()
@@ -2435,7 +2440,7 @@ impl App {
     }
 
     // Update favorites based on renaming or moving dirs.
-    /// Reads the installed icon themes for the settings list and the appearance page.
+    /// Reads the installed icon themes for the settings, the gallery and the appearance page.
     fn load_icon_themes(&mut self) {
         self.icon_themes = icon_themes::installed_themes();
         // The bundled set is always available, even when no copy of it is on disk.
@@ -2455,11 +2460,6 @@ impl App {
                 },
             );
         }
-        self.icon_theme_labels = self
-            .icon_themes
-            .iter()
-            .map(|theme| theme.name.clone())
-            .collect();
     }
 
     /// Saves new folder looks and redraws the folders whose look changed.
@@ -2727,7 +2727,7 @@ impl Application for App {
             mode: flags.mode,
             app_themes,
             icon_themes: Vec::new(),
-            icon_theme_labels: Vec::new(),
+            icon_theme_previews: Vec::new(),
             icon_theme: cosmic::icon_theme::default(),
             folder_appearance: None,
             compio_tx,
@@ -5212,8 +5212,17 @@ impl Application for App {
                 return self.update_config();
             }
             Message::ToggleContextPage(context_page) => {
-                if context_page == ContextPage::Settings {
-                    self.load_icon_themes();
+                match context_page {
+                    ContextPage::Settings => self.load_icon_themes(),
+                    ContextPage::IconThemes => {
+                        self.load_icon_themes();
+                        self.icon_theme_previews = self
+                            .icon_themes
+                            .iter()
+                            .map(icon_theme_gallery::previews)
+                            .collect();
+                    }
+                    _ => {}
                 }
                 //TODO: ensure context menus are closed
                 if self.context_page == context_page
@@ -6015,6 +6024,20 @@ impl Application for App {
                 Message::ToggleContextPage(ContextPage::FolderAppearance),
             )
             .title(fl!("folder-appearance")),
+            ContextPage::IconThemes => context_drawer::context_drawer(
+                icon_theme_gallery::view(
+                    &self.icon_themes,
+                    &self.icon_theme_previews,
+                    &self.icon_theme,
+                ),
+                Message::ToggleContextPage(ContextPage::IconThemes),
+            )
+            .title(fl!("icon-themes"))
+            .actions(
+                widget::button::text(fl!("settings"))
+                    .leading_icon(widget::icon::from_name("go-previous-symbolic"))
+                    .on_press(Message::ToggleContextPage(ContextPage::Settings)),
+            ),
         })
     }
 
