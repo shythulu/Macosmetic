@@ -26,6 +26,7 @@ pub mod folder_look;
 mod gesture;
 #[cfg(target_os = "macos")]
 pub(crate) mod gesture_macos;
+mod icon_theme_gallery;
 pub mod icon_themes;
 mod key_bind;
 pub(crate) mod large_image;
