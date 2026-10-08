@@ -21,9 +21,12 @@ pub mod clipboard;
 pub mod config;
 mod context_action;
 pub mod dialog;
+mod folder_appearance;
+pub mod folder_look;
 mod gesture;
 #[cfg(target_os = "macos")]
 pub(crate) mod gesture_macos;
+pub mod icon_themes;
 mod key_bind;
 pub(crate) mod large_image;
 #[cfg(target_os = "macos")]

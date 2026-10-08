@@ -53,6 +53,11 @@ impl MimeIconCache {
 pub static MIME_ICON_CACHE: LazyLock<Mutex<MimeIconCache>> =
     LazyLock::new(|| Mutex::new(MimeIconCache::default()));
 
+/// Forgets resolved icons, after the icon theme changed. The MIME database is kept.
+pub fn clear_icon_cache() {
+    MIME_ICON_CACHE.lock().unwrap().cache.clear();
+}
+
 #[cfg(not(unix))]
 pub fn mime_for_path(
     path: impl AsRef<Path>,

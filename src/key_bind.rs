@@ -654,6 +654,7 @@ unit_actions![
     CopyPath,
     CopyTo,
     Cut,
+    CustomizeFolder,
     CosmicSettingsDesktop,
     CosmicSettingsDisplays,
     CosmicSettingsWallpaper,
@@ -1106,8 +1107,8 @@ mod tests {
             assert_eq!(&action.config_name(), name);
             assert_eq!(Action::from_config_name(name), Some(*action));
         }
-        // 66 payload-free variants plus the four parameterized ones below.
-        assert_eq!(UNIT_ACTIONS.len(), 66);
+        // 67 payload-free variants plus the four parameterized ones below.
+        assert_eq!(UNIT_ACTIONS.len(), 67);
     }
 
     #[test]
