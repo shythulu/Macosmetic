@@ -101,18 +101,11 @@ name = "gvfs"
 required-features = ["gvfs"]
 
 [features]
-default = [
-    "bzip2",
-    "dbus-config",
-    "desktop",
-    "gvfs",
-    "io-uring",
-    "lzma-rust2",
-    "notify",
-    "quicklook",
-    "wayland",
-    "wgpu",
-]
+# The macOS build, so that a plain `cargo build` or `cargo run` works here. The Linux
+# desktop integrations do not build on macOS (wayland needs xkbcommon, desktop and
+# dbus-config need freedesktop crates); a Linux build asks for them with `--features linux`.
+default = ["bzip2", "lzma-rust2", "quicklook", "wgpu"]
+linux = ["dbus-config", "desktop", "gvfs", "io-uring", "notify", "wayland"]
 dbus-config = ["libcosmic/dbus-config"]
 desktop = ["libcosmic/desktop", "dep:cosmic-mime-apps", "dep:xdg"]
 desktop-applet = []

@@ -30,16 +30,12 @@ app="$target_dir/macos/$app_name.app"
 icon_theme_dir=${COSMIC_ICON_THEME_DIR:-$HOME/.local/share/icons/Cosmic}
 mime_dir=${SHARED_MIME_INFO_DIR:-/opt/homebrew/share/mime}
 
-# The release build. Linux-only default features are off; `quicklook` is in the
-# default set but has to be re-listed because --no-default-features drops it.
-build_features=bzip2,lzma-rust2,wgpu,quicklook
-
+# The release build. The default features are the macOS set.
 if [ ! -x "$binary" ]; then
     echo "==> building $bin_name (release)"
     (
         cd -- "$repo_root"
-        CARGO_TARGET_DIR="$target_dir" cargo build --release \
-            --no-default-features --features "$build_features"
+        CARGO_TARGET_DIR="$target_dir" cargo build --release
     )
 fi
 

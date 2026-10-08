@@ -1583,6 +1583,7 @@ impl App {
         }
         // Manually rescan any trash tabs after any operation is completed
         tasks.push(self.rescan_trash());
+        tasks.push(self.update_notification());
         Task::batch(tasks)
     }
 
@@ -2017,6 +2018,10 @@ impl App {
                     .unwrap();
                     cosmic::action::app(Message::MaybeExit)
                 });
+            }
+            // A quit made while operations were running exits once the last one is done.
+            if self.quit_requested {
+                return Task::done(cosmic::action::app(Message::MaybeExit));
             }
         }
 
@@ -5833,10 +5838,10 @@ impl Application for App {
                     // Pinning the window to sRGB is a no-op after the first time.
                     #[cfg(target_os = "macos")]
                     tasks.push(crate::appkit_macos::pin_srgb_color_space(window_id));
-                    // The application menu exists by now, and its Quit item has to give Cmd+Q
-                    // up before the binding table can see it. Also a no-op after the first.
+                    // The application menu exists by now, and its Quit item has to be pointed
+                    // at Message::Quit. Also a no-op after the first.
                     #[cfg(target_os = "macos")]
-                    crate::appkit_macos::release_quit_key_equivalent();
+                    crate::appkit_macos::route_quit_menu_item();
                 } else {
                     #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
                     self.layer_sizes.insert(window_id, size);
@@ -7615,6 +7620,8 @@ impl Application for App {
 
         #[cfg(target_os = "macos")]
         subscriptions.push(crate::appkit_macos::activation_subscription().map(|_| Message::Reopen));
+        #[cfg(target_os = "macos")]
+        subscriptions.push(crate::appkit_macos::quit_subscription().map(|_| Message::Quit));
 
         Subscription::batch(subscriptions)
     }
