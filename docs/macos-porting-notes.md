@@ -342,6 +342,11 @@ relied on elsewhere, so both now travel inside the bundle.
 Both are **build-machine prerequisites** and a missing one fails the build loudly, because
 a bundle built without them looks perfectly well-formed and has no icons.
 
+The icon half only works because of the libcosmic fork in `Cargo.toml`'s `[patch]`.
+Upstream libcosmic never looks up icon themes on macOS: every name comes from icons
+compiled into the binary (`docs/icon-theme-customization.md` §0). The fork turns the
+freedesktop lookup on for macOS and keeps the compiled-in icons as the last fallback.
+
 `mime/packages` is deleted again after the copy. Nothing reads it at runtime —
 `xdg-mime-rs` reads exactly `aliases`, `globs2`, `icons`, `generic-icons`, `subclasses`
 and `magic` out of `<datadir>/mime`, never `mime.cache` and never the source XML — and

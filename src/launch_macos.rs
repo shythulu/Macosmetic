@@ -112,6 +112,13 @@ pub fn prepare() {
         unsafe { env::set_var("XDG_DATA_DIRS", data_dirs) };
     }
 
+    // Icon themes the app installs go to `$XDG_DATA_HOME/icons`. The icon lookup only
+    // searches directories that exist on its first use, so create it now.
+    let icons = crate::icon_themes::data_home(&crate::home_dir()).join("icons");
+    if let Err(err) = std::fs::create_dir_all(&icons) {
+        log::warn!("failed to create {}: {}", icons.display(), err);
+    }
+
     if env::var_os("LANG").is_none()
         && env::var_os("LC_ALL").is_none()
         && let Some(lang) = system_lang()

@@ -138,6 +138,8 @@ debug = true
 
 [target.'cfg(unix)'.dependencies]
 fork = "0.7"
+# The icon lookup libcosmic uses, for icons pinned to a theme other than the active one.
+freedesktop-icons = { package = "cosmic-freedesktop-icons", git = "https://github.com/pop-os/freedesktop-icons" }
 uzers = "0.12.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -206,6 +208,14 @@ tokio = { version = "1", features = ["rt", "macros"] }
 
 # [patch.'https://github.com/pop-os/cosmic-text']
 # cosmic-text = { path = "../cosmic-text" }
+
+# Fork of pop-os/libcosmic with the macOS patches this port needs (icon theme
+# lookup on macOS). Branch `macosmetic` sits on the upstream revision the lock
+# pinned; rebase it when moving to a newer libcosmic.
+[patch.'https://github.com/pop-os/libcosmic']
+libcosmic = { git = "https://github.com/shythulu/libcosmic.git", branch = "macosmetic" }
+cosmic-config = { git = "https://github.com/shythulu/libcosmic.git", branch = "macosmetic" }
+cosmic-theme = { git = "https://github.com/shythulu/libcosmic.git", branch = "macosmetic" }
 
 # [patch.'https://github.com/pop-os/libcosmic']
 # libcosmic = { path = "../libcosmic" }

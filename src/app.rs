@@ -63,7 +63,13 @@ use crate::config::{
     AppTheme, Config, DesktopConfig, Favorite, IconSizes, State, TIME_CONFIG_ID, TabConfig,
     TimeConfig, TypeToSearch,
 };
-use crate::dialog::{Dialog, DialogKind, DialogMessage, DialogResult, DialogSettings};
+use crate::dialog::{
+    Dialog, DialogFilter, DialogFilterPattern, DialogKind, DialogMessage, DialogResult,
+    DialogSettings,
+};
+use crate::folder_appearance::FolderAppearance;
+use crate::folder_look::{self, FolderLook};
+use crate::icon_themes::{self, IconThemeInfo};
 use crate::key_bind::key_binds_with_overrides;
 use crate::localize::LANGUAGE_SORTER;
 use crate::mime_app::{self, MimeApp, MimeAppCache, MimeAppMatch};
@@ -189,6 +195,7 @@ pub enum Action {
     CopyPath,
     CopyTo,
     Cut,
+    CustomizeFolder,
     CosmicSettingsDesktop,
     CosmicSettingsDisplays,
     CosmicSettingsWallpaper,
@@ -265,6 +272,7 @@ impl Action {
             Self::CopyPath => Message::CopyPath(entity_opt),
             Self::CopyTo => Message::CopyTo(entity_opt),
             Self::Cut => Message::Cut(entity_opt),
+            Self::CustomizeFolder => Message::CustomizeFolder(entity_opt),
             Self::CosmicSettingsDesktop => Message::CosmicSettings("desktop"),
             Self::CosmicSettingsDisplays => Message::CosmicSettings("displays"),
             Self::CosmicSettingsWallpaper => Message::CosmicSettings("wallpaper"),
@@ -402,6 +410,8 @@ pub enum Message {
     CopyTo(Option<Entity>),
     CopyToResult(DialogResult),
     CosmicSettings(&'static str),
+    /// Open the folder appearance page for the selected folders.
+    CustomizeFolder(Option<Entity>),
     Cut(Option<Entity>),
     Delete(Option<Entity>),
     DesktopConfig(DesktopConfig),
@@ -411,6 +421,14 @@ pub enum Message {
     DialogComplete,
     Eject,
     FileDialogMessage(DialogMessage),
+    FolderLookChooseImage,
+    FolderLookIconSet(usize),
+    FolderLookImageResult(DialogResult),
+    FolderLookSearch(String),
+    /// Give the folders on the appearance page this look, or clear it with `None`.
+    FolderLookSet(Option<FolderLook>),
+    /// Use the installed icon theme at this index of the settings list.
+    IconTheme(usize),
     DialogPush(DialogPage, Option<widget::Id>),
     DialogUpdate(DialogPage),
     DialogUpdateComplete(DialogPage),
@@ -530,6 +548,8 @@ pub enum Message {
     ),
     TabView(Option<Entity>, tab::View),
     TimeConfigChange(TimeConfig),
+    /// The toolkit config changed, which carries the icon theme.
+    ToolkitConfig(cosmic::config::CosmicTk),
     ToggleContextPage(ContextPage),
     ToggleFoldersFirst,
     ToggleShowHidden,
@@ -564,6 +584,7 @@ pub enum Message {
 pub enum ContextPage {
     About,
     EditHistory,
+    FolderAppearance,
     NetworkDrive,
     Preview(Option<Entity>, PreviewKind),
     Settings,
@@ -801,6 +822,12 @@ pub struct App {
     state: State,
     mode: Mode,
     app_themes: Vec<String>,
+    /// Installed icon themes for the settings list, and their display names.
+    icon_themes: Vec<IconThemeInfo>,
+    icon_theme_labels: Vec<String>,
+    /// The icon theme the app's icons were last built with.
+    icon_theme: String,
+    folder_appearance: Option<FolderAppearance>,
     compio_tx: mpsc::Sender<Pin<Box<dyn Future<Output = ()> + Send>>>,
     context_page: ContextPage,
     dialog_pages: DialogPages,
@@ -1474,6 +1501,7 @@ impl App {
                     if self.update_favorites([(from, to)].as_slice()) {
                         commands.push(self.update_config());
                     }
+                    commands.push(self.move_folder_looks([(from, to)].as_slice()));
                 } else if let Operation::Move {
                     ref paths, ref to, ..
                 } = op
@@ -1485,6 +1513,7 @@ impl App {
                     if self.update_favorites(&path_changes) {
                         commands.push(self.update_config());
                     }
+                    commands.push(self.move_folder_looks(&path_changes));
                 }
 
                 if matches!(op, Operation::RemoveFromRecents { .. }) {
@@ -2344,6 +2373,17 @@ impl App {
                         },
                     ))
                 })
+                .add({
+                    let selected = self
+                        .icon_themes
+                        .iter()
+                        .position(|theme| theme.id == self.icon_theme);
+                    settings::item::builder(fl!("icon-theme")).control(widget::dropdown(
+                        &self.icon_theme_labels,
+                        selected,
+                        Message::IconTheme,
+                    ))
+                })
                 .into(),
             settings::section()
                 .title(fl!("type-to-search"))
@@ -2390,6 +2430,132 @@ impl App {
     }
 
     // Update favorites based on renaming or moving dirs.
+    /// Reads the installed icon themes for the settings list and the appearance page.
+    fn load_icon_themes(&mut self) {
+        self.icon_themes = icon_themes::installed_themes();
+        // The bundled set is always available, even when no copy of it is on disk.
+        if !self
+            .icon_themes
+            .iter()
+            .any(|theme| theme.id == cosmic::icon_theme::COSMIC)
+        {
+            self.icon_themes.insert(
+                0,
+                IconThemeInfo {
+                    id: cosmic::icon_theme::COSMIC.to_string(),
+                    name: "COSMIC".to_string(),
+                    inherits: Vec::new(),
+                    roots: Vec::new(),
+                    directories: Vec::new(),
+                },
+            );
+        }
+        self.icon_theme_labels = self
+            .icon_themes
+            .iter()
+            .map(|theme| theme.name.clone())
+            .collect();
+    }
+
+    /// Saves new folder looks and redraws the folders whose look changed.
+    fn set_folder_looks(&mut self, looks: BTreeMap<PathBuf, FolderLook>) -> Task<Message> {
+        let changed = folder_look::changed_paths(&self.config.folder_looks, &looks);
+        if changed.is_empty() {
+            return Task::none();
+        }
+        match &self.config_handler {
+            Some(config_handler) => {
+                if let Err(err) = self.config.set_folder_looks(config_handler, looks) {
+                    log::warn!("failed to save config \"folder_looks\": {err}");
+                }
+            }
+            None => {
+                self.config.folder_looks = looks;
+                log::warn!("failed to save config \"folder_looks\": no config handler");
+            }
+        }
+        self.folder_looks_changed(&changed)
+    }
+
+    /// Redraws folders after their looks changed, here or in another window.
+    fn folder_looks_changed(&mut self, paths: &[PathBuf]) -> Task<Message> {
+        folder_look::set_looks(&self.config.folder_looks);
+        let tabs: Box<[_]> = self.tab_model.iter().collect();
+        for entity in tabs {
+            if let Some(tab) = self.tab_model.data_mut::<Tab>(entity) {
+                tab.refresh_folder_icons(paths);
+            }
+        }
+        self.update_nav_model();
+        if let Some(page) = &mut self.folder_appearance {
+            page.refresh();
+        }
+        Task::none()
+    }
+
+    /// Moves folder looks along with folders this app renamed or moved.
+    fn move_folder_looks(
+        &mut self,
+        changes: &[(impl AsRef<Path>, impl AsRef<Path>)],
+    ) -> Task<Message> {
+        let mut looks = self.config.folder_looks.clone();
+        if folder_look::rekey(&mut looks, changes) {
+            self.set_folder_looks(looks)
+        } else {
+            Task::none()
+        }
+    }
+
+    /// Rebuilds every icon after the icon theme changed.
+    fn icon_theme_changed(&mut self) -> Task<Message> {
+        self.icon_theme = cosmic::icon_theme::default();
+        folder_look::clear_cache();
+        mime_icon::clear_icon_cache();
+        self.mime_app_cache.reload();
+        self.update_nav_model();
+        if let Some(page) = &mut self.folder_appearance {
+            page.refresh();
+        }
+        let tabs: Box<[_]> = self.tab_model.iter().collect();
+        Task::batch(
+            tabs.into_iter()
+                .map(|entity| self.update(Message::TabMessage(Some(entity), tab::Message::Reload))),
+        )
+    }
+
+    /// Opens a file dialog to pick an image for the folders on the appearance page.
+    fn choose_folder_image(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        if let Some(old_dialog) = self.file_dialog_opt.take() {
+            let old_id = old_dialog.window_id();
+            self.windows.remove(&old_id);
+            tasks.push(window::close(old_id));
+        }
+        let start = dirs::picture_dir().unwrap_or_else(home_dir);
+        let (mut dialog, dialog_task) = Dialog::new(
+            DialogSettings::new().kind(DialogKind::OpenFile).path(start),
+            Message::FileDialogMessage,
+            Message::FolderLookImageResult,
+        );
+        let filter = DialogFilter {
+            label: fl!("images"),
+            patterns: folder_look::IMAGE_EXTENSIONS
+                .iter()
+                .map(|ext| DialogFilterPattern::Glob(format!("*.{ext}")))
+                .collect(),
+        };
+        tasks.push(dialog.set_filters(vec![filter], Some(0)));
+        tasks.push(dialog.set_title(fl!("choose-image")));
+        dialog.set_accept_label(fl!("choose"));
+        self.windows.insert(
+            dialog.window_id(),
+            Window::new(WindowKind::FileDialog(None)),
+        );
+        self.file_dialog_opt = Some(dialog);
+        tasks.push(dialog_task);
+        Task::batch(tasks)
+    }
+
     fn update_favorites(&mut self, path_changes: &[(impl AsRef<Path>, impl AsRef<Path>)]) -> bool {
         let mut favorites_changed = false;
         let favorites = self
@@ -2494,6 +2660,7 @@ impl Application for App {
         }
 
         let app_themes = vec![fl!("match-desktop"), fl!("dark"), fl!("light")];
+        folder_look::set_looks(&flags.config.folder_looks);
 
         let key_binds = key_binds_with_overrides(&flags.mode.tab_mode(), &flags.config.keybinds);
 
@@ -2554,6 +2721,10 @@ impl Application for App {
             state: flags.state,
             mode: flags.mode,
             app_themes,
+            icon_themes: Vec::new(),
+            icon_theme_labels: Vec::new(),
+            icon_theme: cosmic::icon_theme::default(),
+            folder_appearance: None,
             compio_tx,
             context_page: ContextPage::Preview(None, PreviewKind::Selected),
             dialog_pages: DialogPages::new(),
@@ -3070,10 +3241,13 @@ impl Application for App {
                     // Show details and military time are preserved for existing instances
                     let show_details = self.config.show_details;
                     let military_time = self.config.tab.military_time;
+                    let changed_looks =
+                        folder_look::changed_paths(&self.config.folder_looks, &config.folder_looks);
                     self.config = config;
                     self.config.show_details = show_details;
                     self.config.tab.military_time = military_time;
-                    return self.update_config();
+                    let looks_task = self.folder_looks_changed(&changed_looks);
+                    return Task::batch([self.update_config(), looks_task]);
                 }
             }
             Message::Copy(entity_opt) => {
@@ -3125,6 +3299,91 @@ impl Application for App {
                     }
                 }
                 self.file_dialog_opt = None;
+            }
+            Message::CustomizeFolder(entity_opt) => {
+                let paths: Vec<PathBuf> = self
+                    .selected_paths(entity_opt)
+                    .filter(|path| path.is_dir())
+                    .collect();
+                if !paths.is_empty() {
+                    self.load_icon_themes();
+                    self.folder_appearance = Some(FolderAppearance::new(paths, &self.icon_themes));
+                    self.context_page = ContextPage::FolderAppearance;
+                    self.set_show_context(true);
+                }
+            }
+            Message::FolderLookChooseImage => {
+                return self.choose_folder_image();
+            }
+            Message::FolderLookIconSet(index) => {
+                if let Some(page) = &mut self.folder_appearance {
+                    page.set_icon_set(index);
+                }
+            }
+            Message::FolderLookImageResult(result) => {
+                if let Some(file_dialog) = self.file_dialog_opt.take() {
+                    self.windows.remove(&file_dialog.window_id());
+                }
+                if let DialogResult::Open(paths) = result
+                    && let Some(path) = paths.first()
+                {
+                    match folder_look::import_image(path) {
+                        Ok(image) => {
+                            return self
+                                .update(Message::FolderLookSet(Some(FolderLook::Image(image))));
+                        }
+                        Err(err) => {
+                            log::warn!("failed to import {}: {}", path.display(), err);
+                        }
+                    }
+                }
+            }
+            Message::FolderLookSearch(search) => {
+                if let Some(page) = &mut self.folder_appearance {
+                    page.set_search(search);
+                }
+            }
+            Message::FolderLookSet(look) => {
+                let Some(page) = &self.folder_appearance else {
+                    return Task::none();
+                };
+                let mut looks = self.config.folder_looks.clone();
+                for path in &page.paths {
+                    match &look {
+                        Some(look) => {
+                            looks.insert(path.clone(), look.clone());
+                        }
+                        None => {
+                            looks.remove(path);
+                        }
+                    }
+                }
+                return self.set_folder_looks(looks);
+            }
+            Message::IconTheme(index) => {
+                if let Some(theme) = self.icon_themes.get(index) {
+                    let id = theme.id.clone();
+                    // The toolkit config is where COSMIC keeps the icon theme, so every
+                    // libcosmic app that watches it follows along.
+                    match cosmic::config::CosmicTk::config() {
+                        Ok(config) => {
+                            if let Err(err) = config.set("icon_theme", id.clone()) {
+                                log::warn!("failed to save icon theme: {err}");
+                            }
+                        }
+                        Err(err) => log::warn!("failed to open toolkit config: {err}"),
+                    }
+                    cosmic::icon_theme::set_default(id);
+                    return self.icon_theme_changed();
+                }
+            }
+            Message::ToolkitConfig(config) => {
+                if config.icon_theme != self.icon_theme {
+                    // libcosmic applies this too; doing it here first means the rebuild
+                    // below sees the new theme whichever subscription fires first.
+                    cosmic::icon_theme::set_default(config.icon_theme);
+                    return self.icon_theme_changed();
+                }
             }
             Message::Cut(entity_opt) => {
                 self.set_cut(entity_opt);
@@ -4948,6 +5207,9 @@ impl Application for App {
                 return self.update_config();
             }
             Message::ToggleContextPage(context_page) => {
+                if context_page == ContextPage::Settings {
+                    self.load_icon_themes();
+                }
                 //TODO: ensure context menus are closed
                 if self.context_page == context_page
                     || matches!(self.context_page, ContextPage::Preview(_, _))
@@ -5740,6 +6002,14 @@ impl Application for App {
                 Message::ToggleContextPage(ContextPage::Settings),
             )
             .title(fl!("settings")),
+            ContextPage::FolderAppearance => context_drawer::context_drawer(
+                self.folder_appearance.as_ref().map_or_else(
+                    || widget::text::body(String::new()).into(),
+                    FolderAppearance::view,
+                ),
+                Message::ToggleContextPage(ContextPage::FolderAppearance),
+            )
+            .title(fl!("folder-appearance")),
         })
     }
 
@@ -6893,6 +7163,7 @@ impl Application for App {
         struct WatcherSubscription;
         struct TrashWatcherSubscription;
         struct TimeSubscription;
+        struct ToolkitSubscription;
         #[cfg(all(
             not(feature = "desktop-applet"),
             not(target_os = "ios"),
@@ -6959,6 +7230,12 @@ impl Application for App {
                 }
                 Message::Config(update.config)
             }),
+            cosmic_config::config_subscription::<_, cosmic::config::CosmicTk>(
+                TypeId::of::<ToolkitSubscription>(),
+                cosmic::config::ID.into(),
+                1,
+            )
+            .map(|update| Message::ToolkitConfig(update.config)),
             cosmic_config::config_subscription::<_, TimeConfig>(
                 TypeId::of::<TimeSubscription>(),
                 TIME_CONFIG_ID.into(),

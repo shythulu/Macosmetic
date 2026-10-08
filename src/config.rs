@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::any::TypeId;
+use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::FxOrderMap;
 use crate::app::App;
+use crate::folder_look::FolderLook;
 use crate::key_bind::Shortcuts;
 use crate::tab::{HeadingOptions, Location, View};
 
@@ -205,6 +207,9 @@ pub struct Config {
     pub context_actions: Vec<ContextActionPreset>,
     pub thumb_cfg: ThumbCfg,
     pub favorites: Vec<Favorite>,
+    /// Looks the user gave individual folders, keyed by path. Unlike `State::sort_names`
+    /// these are never evicted: each one is an explicit choice.
+    pub folder_looks: BTreeMap<PathBuf, FolderLook>,
     /// Key bindings that override the defaults from [`crate::key_bind::key_binds`].
     ///
     /// Optional: configurations written before this field existed simply have no overrides.
@@ -274,6 +279,7 @@ impl Default for Config {
                 Favorite::Pictures,
                 Favorite::Videos,
             ],
+            folder_looks: BTreeMap::new(),
             keybinds: Shortcuts::new(),
             show_details: false,
             show_recents: true,

@@ -316,6 +316,33 @@ checksum = {$kind} checksum
 calculate = Calculate
 error = Error
 
+## Customize folder
+customize-folder = Customize folder...
+folder-appearance = Folder appearance
+folders-selected = {$count} folders
+folder-colour = Colour
+folder-icon = Icon
+icon-set = Icon set
+icon-set-current = Current icon theme
+search-icons = Search icons
+no-matching-icons = No matching icons
+folder-image = Image
+choose-image = Choose image
+browse = Browse...
+choose = Choose
+images = Images
+reset-folder-appearance = Reset to default
+colour-red = Red
+colour-orange = Orange
+colour-yellow = Yellow
+colour-green = Green
+colour-cyan = Cyan
+colour-blue = Blue
+colour-violet = Violet
+colour-magenta = Magenta
+colour-brown = Brown
+colour-grey = Grey
+
 ## Settings
 settings = Settings
 single-click = Single click to open
@@ -327,6 +354,7 @@ theme = Theme
 match-desktop = Match desktop
 dark = Dark
 light = Light
+icon-theme = Icons
 
 ### Type to search
 type-to-search = Type to search

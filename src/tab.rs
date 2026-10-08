@@ -55,6 +55,7 @@ use crate::config::{
     ThumbCfg,
 };
 use crate::dialog::DialogKind;
+use crate::folder_look::{self, FolderLook};
 use crate::large_image::{
     LargeImageManager, decode_large_image, exceeds_memory_limit, should_use_dedicated_worker,
     should_use_tiling,
@@ -281,20 +282,40 @@ fn button_style(
     }
 }
 
+/// The icon name a folder uses when it has no look of its own.
+pub fn folder_base_icon_name(path: &Path) -> &'static str {
+    SPECIAL_DIRS.get(path).map_or("folder", |x| *x)
+}
+
 pub fn folder_icon(path: &PathBuf, icon_size: u16) -> widget::icon::Handle {
-    widget::icon::from_name(SPECIAL_DIRS.get(path).map_or("folder", |x| *x))
-        .prefer_svg(true)
-        .size(icon_size)
-        .handle()
+    folder_icon_with_look(path, folder_look::stored_look(path).as_ref(), icon_size)
+}
+
+/// The folder's icon, drawn with `look` when it has one.
+pub fn folder_icon_with_look(
+    path: &Path,
+    look: Option<&FolderLook>,
+    icon_size: u16,
+) -> widget::icon::Handle {
+    let base = folder_base_icon_name(path);
+    look.and_then(|look| folder_look::folder_handle(look, base, icon_size))
+        .unwrap_or_else(|| {
+            widget::icon::from_name(base)
+                .prefer_svg(true)
+                .size(icon_size)
+                .handle()
+        })
 }
 
 pub fn folder_icon_symbolic(path: &PathBuf, icon_size: u16) -> widget::icon::Handle {
-    widget::icon::from_name(format!(
-        "{}-symbolic",
-        SPECIAL_DIRS.get(path).map_or("folder", |x| *x)
-    ))
-    .size(icon_size)
-    .handle()
+    let base = folder_base_icon_name(path);
+    folder_look::stored_look(path)
+        .and_then(|look| folder_look::folder_handle_symbolic(&look, base, icon_size))
+        .unwrap_or_else(|| {
+            widget::icon::from_name(format!("{base}-symbolic"))
+                .size(icon_size)
+                .handle()
+        })
 }
 
 //TODO: replace with Path::has_trailing_sep when stable
@@ -831,12 +852,14 @@ pub fn item_from_entry(
 
     let (mime, icon_handle_grid, icon_handle_list, icon_handle_list_condensed) =
         if metadata.is_dir() {
+            // A `.directory` file is one more read per subfolder; skip it on remote mounts.
+            let look = folder_look::look_for(&path, !remote);
             (
                 //TODO: make this a static
                 "inode/directory".parse().unwrap(),
-                folder_icon(&path, sizes.grid()),
-                folder_icon(&path, sizes.list()),
-                folder_icon(&path, sizes.list_condensed()),
+                folder_icon_with_look(&path, look.as_ref(), sizes.grid()),
+                folder_icon_with_look(&path, look.as_ref(), sizes.list()),
+                folder_icon_with_look(&path, look.as_ref(), sizes.list_condensed()),
             )
         } else {
             let mime = mime_for_path(&path, Some(&metadata), remote);
@@ -3506,6 +3529,31 @@ impl Tab {
 
     pub const fn items_opt_mut(&mut self) -> Option<&mut Vec<Item>> {
         self.items_opt.as_mut()
+    }
+
+    /// Redraws the icons of the listed folders after their looks changed, without a
+    /// rescan. Folders have no thumbnails, so nothing else on the item depends on it.
+    pub fn refresh_folder_icons(&mut self, paths: &[PathBuf]) {
+        let sizes = self.config.icon_sizes;
+        let refresh = |item: &mut Item| {
+            if !item.metadata.is_dir() {
+                return;
+            }
+            let Some(path) = item.path_opt().filter(|path| paths.contains(path)).cloned() else {
+                return;
+            };
+            let look = folder_look::look_for(&path, true);
+            item.icon_handle_grid = folder_icon_with_look(&path, look.as_ref(), sizes.grid());
+            item.icon_handle_list = folder_icon_with_look(&path, look.as_ref(), sizes.list());
+            item.icon_handle_list_condensed =
+                folder_icon_with_look(&path, look.as_ref(), sizes.list_condensed());
+        };
+        if let Some(items) = self.items_opt.as_mut() {
+            items.iter_mut().for_each(&refresh);
+        }
+        if let Some(item) = self.parent_item_opt.as_deref_mut() {
+            refresh(item);
+        }
     }
 
     pub fn set_items(&mut self, mut items: Vec<Item>) {

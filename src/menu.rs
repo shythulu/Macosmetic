@@ -239,6 +239,13 @@ pub fn context_menu<'a>(
 
                 //TODO: Print?
                 children.push(menu_item(fl!("show-details"), Action::Preview));
+                if selected == selected_dir
+                    && selected_mount_point == 0
+                    && !any_trash_item
+                    && matches!(tab.mode, tab::Mode::App)
+                {
+                    children.push(menu_item(fl!("customize-folder"), Action::CustomizeFolder));
+                }
                 if any_trash_item {
                     children.push(menu::Item::Divider);
                     children.push(menu_item(
