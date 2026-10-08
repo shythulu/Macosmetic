@@ -98,7 +98,7 @@ assert_plist_value NSHighResolutionCapable true "NSHighResolutionCapable is true
 # NO opts the app in to the system dark appearance.
 assert_plist_value NSRequiresAquaSystemAppearance false \
     "NSRequiresAquaSystemAppearance is false"
-assert_plist_value LSMinimumSystemVersion 11.0 "LSMinimumSystemVersion is set"
+assert_plist_value LSMinimumSystemVersion 26.0 "LSMinimumSystemVersion is set"
 
 cargo_version=$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' \
     "$repo_root/Cargo.toml" | head -n 1)

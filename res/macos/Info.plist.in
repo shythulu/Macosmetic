@@ -43,10 +43,12 @@
 	<key>NSRequiresAquaSystemAppearance</key>
 	<false/>
 
-	<!-- Platform floor, matching the LC_BUILD_VERSION minos of the aarch64
-	     binary. Apple Silicon starts at macOS 11. -->
+	<!-- Platform floor. Only the current macOS release and later are
+	     supported; this is stricter than the binary's LC_BUILD_VERSION minos
+	     (11.0, the aarch64 toolchain default), and Launch Services enforces
+	     the higher of the two. -->
 	<key>LSMinimumSystemVersion</key>
-	<string>11.0</string>
+	<string>26.0</string>
 
 	<!-- Privacy usage descriptions. Without them a TCC-gated read is silently
 	     denied with no prompt and no System Settings entry, so there is no way
