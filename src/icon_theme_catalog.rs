@@ -15,25 +15,38 @@
 //! icon directory or through which a later entry would be written. APFS is case-insensitive,
 //! and several themes ship paths that differ only by case, so the first of those wins.
 //!
-//! The icon lookup reads the installed themes once per process, so a theme installed here
-//! is only usable after a restart.
+//! Every theme the app installs carries a marker file naming the archive it came from, so
+//! only those can be removed, and an installed theme whose archive the catalog has since
+//! moved on from can be updated in place.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cosmic::widget::icon;
 use rust_embed::RustEmbed;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::icon_themes::IconThemeInfo;
 
 /// Written into every theme directory this module installs; only those may be removed.
 pub const MARKER: &str = ".macosmetic-catalog";
+/// Prefixes of the temporary directories this module makes beside the themes.
+const STAGING_PREFIX: &str = ".macosmetic-staging-";
+const REMOVING_PREFIX: &str = ".macosmetic-removing-";
+/// How long a temporary directory may sit before [`cleanup_staging`] takes it as abandoned.
+const STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+/// How much larger than the catalog says a download may be before curl gives up on it.
+const DOWNLOAD_SLACK: f64 = 1.25;
 
 #[derive(Debug, Deserialize)]
 pub struct Catalog {
@@ -131,6 +144,14 @@ pub fn install_plan(id: &str, installed: &HashSet<String>) -> Vec<&'static Catal
     plan
 }
 
+/// What updating the installed theme `id` takes: the theme itself, from the catalog's
+/// current archive, and whatever it needs that is still missing.
+pub fn update_plan(id: &str, installed: &HashSet<String>) -> Vec<&'static CatalogTheme> {
+    let mut without = installed.clone();
+    without.remove(id);
+    install_plan(id, &without)
+}
+
 /// The download size of `plan`, counting each archive once.
 pub fn plan_size(plan: &[&CatalogTheme]) -> u64 {
     let mut archives: Vec<usize> = plan.iter().map(|theme| theme.archive).collect();
@@ -143,30 +164,205 @@ pub fn plan_size(plan: &[&CatalogTheme]) -> u64 {
         .sum()
 }
 
+/// What this module leaves in every theme directory it installs.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Marker {
+    /// SHA-256 of the archive the theme came from; the catalog's copy moving on from it is
+    /// what makes a theme updatable.
+    pub sha256: String,
+    /// `catalog`, or `file:<name>` for a theme installed from a local archive or folder.
+    #[serde(default = "catalog_source")]
+    pub source: String,
+    /// RFC 3339 time of the installation; empty for markers written before it was recorded.
+    #[serde(default)]
+    pub installed: String,
+}
+
+fn catalog_source() -> String {
+    "catalog".to_string()
+}
+
+impl Marker {
+    fn new(sha256: &str, source: String) -> Self {
+        Self {
+            sha256: sha256.to_string(),
+            source,
+            installed: jiff::Timestamp::now().to_string(),
+        }
+    }
+
+    /// The file name the theme was installed from, if it did not come from the catalog.
+    pub fn file(&self) -> Option<&str> {
+        self.source.strip_prefix("file:")
+    }
+
+    /// The calendar date of the installation, in the local time zone.
+    pub fn installed_date(&self) -> Option<String> {
+        let at: jiff::Timestamp = self.installed.parse().ok()?;
+        Some(at.to_zoned(jiff::tz::TimeZone::system()).date().to_string())
+    }
+}
+
+/// The marker in the theme directory `dir`, if this module installed it. The first markers
+/// held only the archive's SHA-256 on a line of its own.
+pub fn read_marker(dir: &Path) -> Option<Marker> {
+    let text = fs::read_to_string(dir.join(MARKER)).ok()?;
+    serde_json::from_str(&text).ok().or_else(|| {
+        let sha256 = text.trim();
+        (!sha256.is_empty() && !sha256.starts_with('{')).then(|| Marker {
+            sha256: sha256.to_string(),
+            source: catalog_source(),
+            installed: String::new(),
+        })
+    })
+}
+
+fn write_marker(dir: &Path, marker: &Marker) -> io::Result<()> {
+    let mut text = serde_json::to_string(marker).map_err(io::Error::other)?;
+    text.push('\n');
+    fs::write(dir.join(MARKER), text)
+}
+
+/// Whether the installed theme at `dir` came from the catalog.
+pub fn is_catalog_install(dir: &Path) -> bool {
+    dir.join(MARKER).is_file()
+}
+
+/// Whether the catalog holds a newer archive than the installed copy of `theme` came from.
+/// Themes installed by hand or from a file never do.
+pub fn needs_update(theme: &IconThemeInfo) -> bool {
+    let Some(entry) = self::theme(&theme.id) else {
+        return false;
+    };
+    let Some(archive) = CATALOG.archives.get(entry.archive) else {
+        return false;
+    };
+    theme
+        .roots
+        .first()
+        .and_then(|root| read_marker(root))
+        .is_some_and(|marker| marker.file().is_none() && marker.sha256 != archive.sha256)
+}
+
+/// Why an installation stopped. [`InstallError::detail`] keeps the raw text for a Details
+/// view; the gallery shows a plain sentence per variant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InstallError {
+    /// curl could not reach or keep talking to the host.
+    Network { host: String, detail: String },
+    /// The pinned URL answers 404 or 410: the catalog has to be regenerated.
+    Moved,
+    /// The download or the unpacked theme passed the cap, in bytes.
+    TooLarge(u64),
+    Checksum,
+    /// A local archive had this many entries that were not safe to unpack.
+    UnsafeArchive(usize),
+    /// A local archive or folder holds no `index.theme`.
+    NoTheme,
+    /// A theme with this id is installed, and not by this app.
+    Exists(String),
+    NoSpace { needed: u64 },
+    Cancelled,
+    Io(String),
+}
+
+impl InstallError {
+    /// The raw text behind the error, for a Details view.
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Network { detail, .. } => detail.clone(),
+            Self::Io(detail) => detail.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+}
+
+impl fmt::Display for InstallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Network { host, detail } => write!(f, "could not reach {host}: {detail}"),
+            Self::Moved => f.write_str("the download link has moved"),
+            Self::TooLarge(size) => write!(f, "larger than the {size} byte cap"),
+            Self::Checksum => f.write_str("checksum mismatch"),
+            Self::UnsafeArchive(count) => write!(f, "{count} unsafe entries"),
+            Self::NoTheme => f.write_str("no icon theme found"),
+            Self::Exists(id) => write!(f, "{id} is already installed outside the app"),
+            Self::NoSpace { needed } => write!(f, "not enough space ({needed} bytes needed)"),
+            Self::Cancelled => f.write_str("cancelled"),
+            Self::Io(detail) => f.write_str(detail),
+        }
+    }
+}
+
+impl From<io::Error> for InstallError {
+    fn from(err: io::Error) -> Self {
+        match err.kind() {
+            io::ErrorKind::StorageFull => Self::NoSpace { needed: 0 },
+            _ => Self::Io(err.to_string()),
+        }
+    }
+}
+
+/// Where an installation stands, for the card's progress bar and caption.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Step {
+    /// Bytes received so far of all the plan's downloads.
+    Downloading { done: u64, total: u64 },
+    Extracting,
+}
+
+impl Step {
+    /// Overall progress from 0 to 1.
+    pub fn fraction(self) -> f32 {
+        match self {
+            Self::Downloading { done, total } => (done as f32 / total.max(1) as f32).min(1.0),
+            Self::Extracting => 1.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum InstallEvent {
-    /// Overall progress through the downloads, from 0 to 1.
-    Progress(String, f32),
+    Progress(String, Step),
     /// The theme asked for is installed, along with the listed themes it needed.
     Installed(String, Vec<String>),
-    Failed(String, String),
+    Failed(String, InstallError),
+    Cancelled(String),
 }
 
 /// Install `plan`, reporting through `emit`. Blocking: run it on its own thread. `id` is the
-/// theme the user asked for, which every event is about.
-pub fn install(id: String, plan: Vec<&'static CatalogTheme>, emit: impl Fn(InstallEvent)) {
+/// theme the user asked for, which every event is about. Themes in `replace` are swapped
+/// for the freshly unpacked copy; any other theme already in place is kept. Setting
+/// `cancel` stops the download and removes everything staged.
+pub fn install(
+    id: String,
+    plan: Vec<&'static CatalogTheme>,
+    replace: HashSet<String>,
+    cancel: Arc<AtomicBool>,
+    emit: impl Fn(InstallEvent),
+) {
     let icons_dir = user_icons_dir();
-    let result = install_in(&icons_dir, &plan, |fraction| {
-        emit(InstallEvent::Progress(id.clone(), fraction));
+    let result = install_in(&icons_dir, &plan, &replace, &cancel, |step| {
+        emit(InstallEvent::Progress(id.clone(), step));
     });
     match result {
         Ok(()) => {
             let ids = plan.iter().map(|theme| theme.id.clone()).collect();
             emit(InstallEvent::Installed(id, ids));
         }
+        Err(InstallError::Cancelled) => {
+            log::info!("installing icon theme {id} was cancelled");
+            emit(InstallEvent::Cancelled(id));
+        }
+        Err(InstallError::NoSpace { .. }) => {
+            // The unpacked themes are mostly symlinks, so this is a loose upper bound.
+            let needed = plan_size(&plan) * 2;
+            log::warn!("installing icon theme {id} failed: out of space");
+            emit(InstallEvent::Failed(id, InstallError::NoSpace { needed }));
+        }
         Err(err) => {
             log::warn!("installing icon theme {id} failed: {err}");
-            emit(InstallEvent::Failed(id, err.to_string()));
+            emit(InstallEvent::Failed(id, err));
         }
     }
 }
@@ -174,14 +370,16 @@ pub fn install(id: String, plan: Vec<&'static CatalogTheme>, emit: impl Fn(Insta
 fn install_in(
     icons_dir: &Path,
     plan: &[&CatalogTheme],
-    progress: impl Fn(f32),
-) -> io::Result<()> {
+    replace: &HashSet<String>,
+    cancel: &AtomicBool,
+    progress: impl Fn(Step),
+) -> Result<(), InstallError> {
     fs::create_dir_all(icons_dir)?;
     let staging = tempfile::Builder::new()
-        .prefix(".macosmetic-staging-")
+        .prefix(STAGING_PREFIX)
         .tempdir_in(icons_dir)?;
 
-    let total = plan_size(plan).max(1);
+    let total = plan_size(plan);
     let mut done = 0;
     let mut archive_indexes: Vec<usize> = plan.iter().map(|theme| theme.archive).collect();
     archive_indexes.dedup();
@@ -190,15 +388,25 @@ fn install_in(
         if !seen.insert(index) {
             continue;
         }
-        let archive = CATALOG.archives.get(index).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "catalog archive missing")
-        })?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(InstallError::Cancelled);
+        }
+        let archive = CATALOG
+            .archives
+            .get(index)
+            .ok_or_else(|| InstallError::Io("catalog archive missing".to_string()))?;
         let file = staging.path().join(format!("archive-{index}.tar.gz"));
-        download(&archive.url, &file, |bytes| {
-            progress((done + bytes) as f32 / total as f32);
-        })?;
+        download(
+            Path::new("curl"),
+            &archive.url,
+            &file,
+            (archive.size as f64 * DOWNLOAD_SLACK) as u64,
+            cancel,
+            |bytes| progress(Step::Downloading { done: done + bytes, total }),
+        )?;
         verify_sha256(&file, &archive.sha256)?;
         done += archive.size;
+        progress(Step::Extracting);
 
         let themes: Vec<_> = plan.iter().filter(|theme| theme.archive == index).collect();
         let targets: Vec<ExtractTarget> = themes
@@ -210,36 +418,61 @@ fn install_in(
             })
             .collect();
         let decoder = flate2::read::GzDecoder::new(File::open(&file)?);
-        let stats = extract(decoder, &targets, staging.path())?;
+        let stats = extract(decoder, &targets, staging.path(), &Limits::default())?;
         log::info!("unpacked {index}: {stats:?}");
         fs::remove_file(&file)?;
 
         for theme in themes {
             let staged = staging.path().join(&theme.id);
             if !staged.join("index.theme").is_file() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{} has no index.theme", theme.id),
-                ));
+                return Err(InstallError::Io(format!("{} has no index.theme", theme.id)));
             }
-            fs::write(staged.join(MARKER), format!("{}\n", archive.sha256))?;
+            write_marker(&staged, &Marker::new(&archive.sha256, catalog_source()))?;
             let target = icons_dir.join(&theme.id);
-            if target.exists() {
-                // Installed meanwhile, by another install that needed the same theme.
-                log::info!("{} is already installed, keeping it", theme.id);
-            } else {
+            if !target.exists() {
                 fs::rename(&staged, &target)?;
                 log::info!("installed icon theme {} at {}", theme.id, target.display());
+            } else if replace.contains(&theme.id) {
+                // Two renames, so a lookup never sees a half-written or missing theme.
+                let removing = retire(&target)?;
+                fs::rename(&staged, &target)?;
+                fs::remove_dir_all(&removing)?;
+                log::info!("updated icon theme {} at {}", theme.id, target.display());
+            } else {
+                // Installed meanwhile, by another install that needed the same theme.
+                log::info!("{} is already installed, keeping it", theme.id);
             }
         }
     }
-    progress(1.0);
     Ok(())
 }
 
-/// Download `url` to `dest` with `curl`, reporting the bytes received so far.
-fn download(url: &str, dest: &Path, progress: impl Fn(u64)) -> io::Result<()> {
-    let mut child = Command::new("curl")
+/// Moves the theme at `target` out of the way, to a name no lookup will take for a theme.
+fn retire(target: &Path) -> io::Result<PathBuf> {
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("theme");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let removing = target.with_file_name(format!("{REMOVING_PREFIX}{name}-{nonce:x}"));
+    fs::rename(target, &removing)?;
+    Ok(removing)
+}
+
+/// Download `url` to `dest` with the `curl` at `program`, reporting the bytes received so far.
+/// Redirects may not leave HTTPS, the transfer stops past `max_size` bytes or once it stalls
+/// for a minute, and setting `cancel` kills it.
+fn download(
+    program: &Path,
+    url: &str,
+    dest: &Path,
+    max_size: u64,
+    cancel: &AtomicBool,
+    progress: impl Fn(u64),
+) -> Result<(), InstallError> {
+    let mut child = Command::new(program)
         .args([
             "--fail",
             "--location",
@@ -247,6 +480,18 @@ fn download(url: &str, dest: &Path, progress: impl Fn(u64)) -> io::Result<()> {
             "--show-error",
             "--proto",
             "=https",
+            "--proto-redir",
+            "=https",
+            "--max-redirs",
+            "5",
+            "--max-filesize",
+            &max_size.to_string(),
+            "--connect-timeout",
+            "15",
+            "--speed-time",
+            "60",
+            "--speed-limit",
+            "1024",
             "--output",
         ])
         .arg(dest)
@@ -259,35 +504,54 @@ fn download(url: &str, dest: &Path, progress: impl Fn(u64)) -> io::Result<()> {
         if let Some(status) = child.try_wait()? {
             break status;
         }
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(InstallError::Cancelled);
+        }
         if let Ok(metadata) = fs::metadata(dest) {
             progress(metadata.len());
         }
         thread::sleep(Duration::from_millis(200));
     };
-    if !status.success() {
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.stderr.take() {
-            let _ = pipe.read_to_string(&mut stderr);
-        }
-        return Err(io::Error::other(format!(
-            "download failed: {}",
-            stderr.trim()
-        )));
+    if status.success() {
+        return Ok(());
     }
-    Ok(())
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    Err(curl_error(status.code(), stderr.trim(), url, max_size))
 }
 
-fn verify_sha256(path: &Path, expected: &str) -> io::Result<()> {
+/// The error behind a curl exit code. 6 is an unresolved host, 7 a refused connection, 28 a
+/// timeout, 35 a TLS failure, 22 an HTTP error with `--fail`, 63 the size cap.
+fn curl_error(code: Option<i32>, stderr: &str, url: &str, max_size: u64) -> InstallError {
+    match code {
+        Some(6 | 7 | 28 | 35) => InstallError::Network {
+            host: host_of(url).to_string(),
+            detail: stderr.to_string(),
+        },
+        Some(22) if stderr.contains("404") || stderr.contains("410") => InstallError::Moved,
+        Some(63) => InstallError::TooLarge(max_size),
+        _ => InstallError::Io(format!("download failed: {stderr}")),
+    }
+}
+
+fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split(['/', '?', '#']).next().unwrap_or(rest)
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> Result<(), InstallError> {
     let mut hasher = Sha256::new();
     io::copy(&mut File::open(path)?, &mut hasher)?;
     let actual = format!("{:x}", hasher.finalize());
     if actual == expected {
         Ok(())
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("checksum mismatch: expected {expected}, got {actual}"),
-        ))
+        log::warn!("checksum mismatch for {}: expected {expected}, got {actual}", path.display());
+        Err(InstallError::Checksum)
     }
 }
 
@@ -302,6 +566,23 @@ pub struct ExtractTarget {
     pub id: String,
 }
 
+/// Caps on what one archive may unpack to. A crafted archive past either is refused whole.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub max_bytes: u64,
+    pub max_entries: usize,
+}
+
+impl Default for Limits {
+    /// Papirus, the largest catalog theme, unpacks to about 300 MB and 42 000 entries.
+    fn default() -> Self {
+        Self {
+            max_bytes: 1_500_000_000,
+            max_entries: 250_000,
+        }
+    }
+}
+
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct ExtractStats {
     pub files: usize,
@@ -312,20 +593,84 @@ pub struct ExtractStats {
     pub rejected: usize,
 }
 
+/// Where the entries written so far sit, lowercased, so a later entry differing only by case
+/// is caught before the file system sees it.
+#[derive(Default)]
+struct Written {
+    files: HashSet<String>,
+    dirs: HashSet<String>,
+    /// Symlinks; nothing may be written below one.
+    links: HashSet<String>,
+    /// Directories dropped for a collision, along with everything below them.
+    skipped: HashSet<String>,
+}
+
+impl Written {
+    /// Records a directory at `lower`, or says why it cannot be made.
+    fn dir(&mut self, lower: &str) -> Placement {
+        if ancestors(lower).any(|ancestor| self.links.contains(ancestor)) {
+            return Placement::ThroughLink;
+        }
+        if ancestors(lower).any(|ancestor| self.skipped.contains(ancestor))
+            || self.files.contains(lower)
+            || ancestors(lower).any(|ancestor| self.files.contains(ancestor))
+        {
+            self.skipped.insert(lower.to_string());
+            return Placement::Collision;
+        }
+        self.dirs.insert(lower.to_string());
+        Placement::Fresh
+    }
+
+    /// Records a file or symlink at `lower`, or says why it cannot be made.
+    fn file(&mut self, lower: &str) -> Placement {
+        if ancestors(lower).any(|ancestor| self.links.contains(ancestor)) {
+            return Placement::ThroughLink;
+        }
+        if ancestors(lower).any(|ancestor| self.skipped.contains(ancestor))
+            || self.files.contains(lower)
+            || self.dirs.contains(lower)
+            || ancestors(lower).any(|ancestor| self.files.contains(ancestor))
+        {
+            return Placement::Collision;
+        }
+        self.files.insert(lower.to_string());
+        for ancestor in ancestors(lower) {
+            self.dirs.insert(ancestor.to_string());
+        }
+        Placement::Fresh
+    }
+}
+
+enum Placement {
+    Fresh,
+    Collision,
+    ThroughLink,
+}
+
 /// Unpack `targets` from the tar stream `reader` into `dest/<id>`.
 ///
 /// Symlinks are kept, since most themes are built on them, but only relative ones that stay
 /// inside the icon directory once the theme sits at `<icons>/<id>`; a variant may point into
 /// a sibling theme installed beside it. Nothing is written through a symlink.
-pub fn extract(reader: impl Read, targets: &[ExtractTarget], dest: &Path) -> io::Result<ExtractStats> {
+pub fn extract(
+    reader: impl Read,
+    targets: &[ExtractTarget],
+    dest: &Path,
+    limits: &Limits,
+) -> Result<ExtractStats, InstallError> {
     let mut stats = ExtractStats::default();
-    // Per target, the lowercased paths written so far and the ones that are symlinks.
-    let mut written: Vec<HashSet<String>> = vec![HashSet::new(); targets.len()];
-    let mut links: Vec<HashSet<String>> = vec![HashSet::new(); targets.len()];
+    let mut written: Vec<Written> = targets.iter().map(|_| Written::default()).collect();
+    let mut entries = 0;
+    let mut bytes = 0;
 
     let mut archive = tar::Archive::new(reader);
     for entry in archive.entries()? {
         let mut entry = entry?;
+        entries += 1;
+        if entries > limits.max_entries {
+            return Err(InstallError::TooLarge(limits.max_bytes));
+        }
         let Some(path) = normal_path(&entry.path()?) else {
             stats.rejected += 1;
             continue;
@@ -354,25 +699,37 @@ pub fn extract(reader: impl Read, targets: &[ExtractTarget], dest: &Path) -> io:
         };
 
         let lower = relative.to_lowercase();
-        if ancestors(&lower).any(|ancestor| links[index].contains(ancestor)) {
-            // Its directory is a symlink; writing it would land outside this theme.
-            stats.rejected += 1;
-            continue;
-        }
         let out = dest.join(&targets[index].id).join(&relative);
         let kind = entry.header().entry_type();
+        let placement = if kind.is_dir() {
+            written[index].dir(&lower)
+        } else {
+            written[index].file(&lower)
+        };
+        match placement {
+            Placement::Fresh => {}
+            Placement::Collision => {
+                stats.case_collisions += 1;
+                continue;
+            }
+            Placement::ThroughLink => {
+                // Its directory is a symlink; writing it would land outside this theme.
+                stats.rejected += 1;
+                continue;
+            }
+        }
         if kind.is_dir() {
             fs::create_dir_all(&out)?;
-            continue;
-        }
-        if !written[index].insert(lower.clone()) {
-            stats.case_collisions += 1;
             continue;
         }
         if let Some(parent) = out.parent() {
             fs::create_dir_all(parent)?;
         }
         if kind.is_file() {
+            bytes += entry.size();
+            if bytes > limits.max_bytes {
+                return Err(InstallError::TooLarge(limits.max_bytes));
+            }
             let mut file = File::create(&out)?;
             io::copy(&mut entry, &mut file)?;
             stats.files += 1;
@@ -387,7 +744,7 @@ pub fn extract(reader: impl Read, targets: &[ExtractTarget], dest: &Path) -> io:
                 continue;
             }
             symlink(&link, &out)?;
-            links[index].insert(lower);
+            written[index].links.insert(lower);
             stats.symlinks += 1;
         } else {
             // Hard links, devices and the like have no place in an icon theme.
@@ -453,21 +810,51 @@ fn symlink(_link: &Path, _at: &Path) -> io::Result<()> {
     ))
 }
 
-/// Remove an installed theme, if this module installed it.
+/// Remove an installed theme, if this module installed it. The directory is moved aside
+/// first, so a lookup running at the same time never sees it half deleted.
 pub fn remove(id: &str) -> io::Result<()> {
-    let dir = user_icons_dir().join(id);
+    remove_in(&user_icons_dir(), id)
+}
+
+fn remove_in(icons_dir: &Path, id: &str) -> io::Result<()> {
+    let dir = icons_dir.join(id);
     if !dir.join(MARKER).is_file() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("{id} was not installed from the catalog"),
         ));
     }
-    fs::remove_dir_all(&dir)
+    let removing = retire(&dir)?;
+    fs::remove_dir_all(&removing)
 }
 
-/// Whether the installed theme at `dir` came from the catalog.
-pub fn is_catalog_install(dir: &Path) -> bool {
-    dir.join(MARKER).is_file()
+/// Remove staging and removal directories under `icons_dir` that a crash left behind. Only
+/// those older than a day go, so another window's install in progress is left alone.
+pub fn cleanup_staging(icons_dir: &Path) {
+    let Ok(entries) = fs::read_dir(icons_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(STAGING_PREFIX) && !name.starts_with(REMOVING_PREFIX) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > STALE_AFTER);
+        if stale {
+            log::info!("removing abandoned {}", entry.path().display());
+            if let Err(err) = fs::remove_dir_all(entry.path()) {
+                log::warn!("failed to remove {}: {err}", entry.path().display());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -480,6 +867,14 @@ mod tests {
         header.set_mode(0o644);
         header.set_entry_type(tar::EntryType::Regular);
         builder.append_data(&mut header, path, data).unwrap();
+    }
+
+    fn add_dir(builder: &mut tar::Builder<Vec<u8>>, path: &str) {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_entry_type(tar::EntryType::Directory);
+        builder.append_data(&mut header, path, &[][..]).unwrap();
     }
 
     fn add_link(builder: &mut tar::Builder<Vec<u8>>, path: &str, target: &str) {
@@ -508,6 +903,10 @@ mod tests {
         }
     }
 
+    fn limits() -> Limits {
+        Limits::default()
+    }
+
     #[test]
     fn extract_keeps_safe_entries_and_drops_the_rest() {
         let mut builder = tar::Builder::new(Vec::new());
@@ -527,7 +926,13 @@ mod tests {
         let data = builder.into_inner().unwrap();
 
         let dest = tempfile::tempdir().unwrap();
-        let stats = extract(&data[..], &[target("pkg-1.0/Theme", "Theme")], dest.path()).unwrap();
+        let stats = extract(
+            &data[..],
+            &[target("pkg-1.0/Theme", "Theme")],
+            dest.path(),
+            &limits(),
+        )
+        .unwrap();
         let theme = dest.path().join("Theme");
 
         assert_eq!(fs::read(theme.join("places/folder.svg")).unwrap(), b"<svg/>");
@@ -562,7 +967,7 @@ mod tests {
         let root = builder.into_inner().unwrap();
 
         let dest = tempfile::tempdir().unwrap();
-        extract(&root[..], &[target("repo-1", "Root")], dest.path()).unwrap();
+        extract(&root[..], &[target("repo-1", "Root")], dest.path(), &limits()).unwrap();
         assert!(dest.path().join("Root/index.theme").is_file());
         assert!(dest.path().join("Root/places/folder.svg").is_file());
 
@@ -571,12 +976,69 @@ mod tests {
             index_theme: Some("adwaita-51/index.theme".to_string()),
             id: "Adwaita".to_string(),
         };
-        extract(&root[..], &[adwaita], dest.path()).unwrap();
+        extract(&root[..], &[adwaita], dest.path(), &limits()).unwrap();
         assert_eq!(
             fs::read(dest.path().join("Adwaita/index.theme")).unwrap(),
             b"[Icon Theme]\nName=Adwaita\n"
         );
         assert!(dest.path().join("Adwaita/scalable/folder.svg").is_file());
+    }
+
+    #[test]
+    fn extract_drops_a_directory_that_collides_with_a_file_by_case() {
+        let mut builder = tar::Builder::new(Vec::new());
+        add_file(&mut builder, "T/index.theme", b"[Icon Theme]\nName=T\n");
+        add_file(&mut builder, "T/places/Foo", b"file");
+        add_dir(&mut builder, "T/places/foo");
+        add_file(&mut builder, "T/places/foo/inside.svg", b"<svg/>");
+        // The other way round: a directory already there, then a file of the same name.
+        add_file(&mut builder, "T/apps/bar/x.svg", b"<svg/>");
+        add_file(&mut builder, "T/apps/Bar", b"file");
+        add_file(&mut builder, "T/apps/kept.svg", b"<svg/>");
+        let data = builder.into_inner().unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let stats = extract(&data[..], &[target("T", "T")], dest.path(), &limits()).unwrap();
+        let theme = dest.path().join("T");
+        assert_eq!(fs::read(theme.join("places/Foo")).unwrap(), b"file");
+        assert!(theme.join("apps/bar/x.svg").is_file());
+        assert!(theme.join("apps/kept.svg").is_file());
+        assert_eq!(
+            stats,
+            ExtractStats {
+                files: 4,
+                symlinks: 0,
+                case_collisions: 3,
+                rejected: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn extract_refuses_too_many_entries_or_bytes() {
+        let mut builder = tar::Builder::new(Vec::new());
+        for n in 0..4 {
+            add_file(&mut builder, &format!("T/{n}.svg"), b"");
+        }
+        let data = builder.into_inner().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let few = Limits {
+            max_bytes: 1_000,
+            max_entries: 3,
+        };
+        assert_eq!(
+            extract(&data[..], &[target("T", "T")], dest.path(), &few).unwrap_err(),
+            InstallError::TooLarge(1_000)
+        );
+
+        let mut builder = tar::Builder::new(Vec::new());
+        add_file(&mut builder, "T/big.svg", &[0; 2_000]);
+        let data = builder.into_inner().unwrap();
+        assert_eq!(
+            extract(&data[..], &[target("T", "T")], dest.path(), &few).unwrap_err(),
+            InstallError::TooLarge(1_000)
+        );
+        assert!(extract(&data[..], &[target("T", "T")], dest.path(), &limits()).is_ok());
     }
 
     #[test]
@@ -612,5 +1074,160 @@ mod tests {
             .map(|theme| theme.id.as_str())
             .collect();
         assert_eq!(plan, ["Papirus-Dark"]);
+
+        let installed = HashSet::from(["Papirus".to_string(), "Papirus-Dark".to_string()]);
+        assert!(install_plan("Papirus-Dark", &installed).is_empty());
+        let plan: Vec<_> = update_plan("Papirus-Dark", &installed)
+            .iter()
+            .map(|theme| theme.id.as_str())
+            .collect();
+        assert_eq!(plan, ["Papirus-Dark"]);
+    }
+
+    /// A stand-in for curl that exits with `code`.
+    #[cfg(unix)]
+    fn fake_curl(dir: &Path, code: i32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let program = dir.join("curl");
+        fs::write(&program, format!("#!/bin/sh\necho 'curl: ({code}) fake' >&2\nexit {code}\n"))
+            .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        program
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_maps_curl_exit_codes() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
+        let cancel = AtomicBool::new(false);
+        let url = "https://codeload.github.com/x/y/tar.gz/z";
+        let run = |code| {
+            download(&fake_curl(dir.path(), code), url, &dest, 10, &cancel, |_| {}).unwrap_err()
+        };
+        assert_eq!(
+            run(6),
+            InstallError::Network {
+                host: "codeload.github.com".to_string(),
+                detail: "curl: (6) fake".to_string(),
+            }
+        );
+        assert_eq!(run(63), InstallError::TooLarge(10));
+        assert_eq!(run(2), InstallError::Io("download failed: curl: (2) fake".to_string()));
+        assert_eq!(
+            curl_error(Some(22), "curl: (22) The requested URL returned error: 404", url, 10),
+            InstallError::Moved
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_is_killed_when_cancelled() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("curl");
+        fs::write(&program, "#!/bin/sh\nsleep 30\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let result = download(&program, "https://x", &dir.path().join("out"), 10, &cancel, |_| {});
+        assert_eq!(result.unwrap_err(), InstallError::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn markers_round_trip_and_old_ones_still_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let theme = dir.path().join("T");
+        fs::create_dir(&theme).unwrap();
+        fs::write(theme.join(MARKER), "abc123\n").unwrap();
+        let old = read_marker(&theme).unwrap();
+        assert_eq!(old.sha256, "abc123");
+        assert_eq!(old.source, "catalog");
+        assert_eq!(old.installed_date(), None);
+        assert!(is_catalog_install(&theme));
+
+        write_marker(&theme, &Marker::new("def456", "file:Sweet.tar.gz".to_string())).unwrap();
+        let new = read_marker(&theme).unwrap();
+        assert_eq!(new.sha256, "def456");
+        assert_eq!(new.file(), Some("Sweet.tar.gz"));
+        assert!(new.installed_date().is_some());
+        assert!(read_marker(dir.path()).is_none());
+    }
+
+    #[test]
+    fn needs_update_when_the_marker_names_an_older_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = catalog();
+        let entry = &catalog.themes[0];
+        let root = dir.path().join(&entry.id);
+        fs::create_dir(&root).unwrap();
+        let info = |roots: Vec<PathBuf>| IconThemeInfo {
+            id: entry.id.clone(),
+            name: entry.name.clone(),
+            inherits: Vec::new(),
+            roots,
+            directories: Vec::new(),
+        };
+        // Installed by hand: no marker, never updated.
+        assert!(!needs_update(&info(vec![root.clone()])));
+        fs::write(root.join(MARKER), "stale\n").unwrap();
+        assert!(needs_update(&info(vec![root.clone()])));
+        let current = &catalog.archives[entry.archive].sha256;
+        write_marker(&root, &Marker::new(current, catalog_source())).unwrap();
+        assert!(!needs_update(&info(vec![root.clone()])));
+        // From a file: no catalog archive to compare with.
+        write_marker(&root, &Marker::new("other", "file:x.zip".to_string())).unwrap();
+        assert!(!needs_update(&info(vec![root])));
+    }
+
+    #[test]
+    fn remove_moves_the_theme_aside_and_refuses_hand_installed_ones() {
+        let icons = tempfile::tempdir().unwrap();
+        let ours = icons.path().join("Ours");
+        fs::create_dir(&ours).unwrap();
+        fs::write(ours.join(MARKER), "abc\n").unwrap();
+        fs::write(ours.join("index.theme"), "").unwrap();
+        let theirs = icons.path().join("Theirs");
+        fs::create_dir(&theirs).unwrap();
+
+        remove_in(icons.path(), "Ours").unwrap();
+        assert!(!ours.exists());
+        assert_eq!(fs::read_dir(icons.path()).unwrap().count(), 1);
+        assert_eq!(
+            remove_in(icons.path(), "Theirs").unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(theirs.is_dir());
+    }
+
+    #[test]
+    fn cleanup_removes_only_stale_temporaries() {
+        let icons = tempfile::tempdir().unwrap();
+        let stale = icons.path().join(format!("{STAGING_PREFIX}old"));
+        let fresh = icons.path().join(format!("{REMOVING_PREFIX}new"));
+        let theme = icons.path().join("Theme");
+        for dir in [&stale, &fresh, &theme] {
+            fs::create_dir(dir).unwrap();
+        }
+        let two_days_ago = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
+        File::open(&stale)
+            .unwrap()
+            .set_modified(two_days_ago)
+            .unwrap();
+        File::open(&theme)
+            .unwrap()
+            .set_modified(two_days_ago)
+            .unwrap();
+
+        cleanup_staging(icons.path());
+        assert!(!stale.exists());
+        assert!(fresh.is_dir());
+        assert!(theme.is_dir());
     }
 }

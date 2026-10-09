@@ -432,9 +432,14 @@ pub enum Message {
     /// Use the installed icon theme at this index of the settings list.
     IconTheme(usize),
     IconThemeInstall(String),
+    IconThemeInstallCancel(String),
     IconThemeInstallEvent(icon_theme_catalog::InstallEvent),
     IconThemeRemove(String),
     IconThemeRemoved(String, Result<(), String>),
+    /// Show or hide the raw error text of a failed install.
+    IconThemeToggleDetails(String),
+    /// Reinstall an installed catalog theme from the catalog's current archive.
+    IconThemeUpdate(String),
     DialogPush(DialogPage, Option<widget::Id>),
     DialogUpdate(DialogPage),
     DialogUpdateComplete(DialogPage),
@@ -2469,6 +2474,46 @@ impl App {
         }
     }
 
+    fn installed_icon_theme_ids(&self) -> HashSet<String> {
+        self.icon_themes
+            .iter()
+            .map(|theme| theme.id.clone())
+            .collect()
+    }
+
+    /// Runs `plan` on its own thread, feeding its progress back as messages. `replace` names
+    /// the installed themes to swap for the new copy.
+    fn install_icon_theme(
+        &mut self,
+        id: String,
+        plan: Vec<&'static icon_theme_catalog::CatalogTheme>,
+        replace: HashSet<String>,
+    ) -> Task<Message> {
+        if plan.is_empty() {
+            return Task::none();
+        }
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.icon_theme_gallery.installs.insert(
+            id.clone(),
+            icon_theme_gallery::InstallState::Installing {
+                step: icon_theme_catalog::Step::Downloading {
+                    done: 0,
+                    total: icon_theme_catalog::plan_size(&plan),
+                },
+                cancel: cancel.clone(),
+            },
+        );
+        let (tx, rx) = cosmic::iced::futures::channel::mpsc::unbounded();
+        std::thread::spawn(move || {
+            icon_theme_catalog::install(id, plan, replace, cancel, |event| {
+                let _ = tx.unbounded_send(event);
+            });
+        });
+        Task::run(rx, |event| {
+            cosmic::action::app(Message::IconThemeInstallEvent(event))
+        })
+    }
+
     /// Saves new folder looks and redraws the folders whose look changed.
     fn set_folder_looks(&mut self, looks: BTreeMap<PathBuf, FolderLook>) -> Task<Message> {
         let changed = folder_look::changed_paths(&self.config.folder_looks, &looks);
@@ -3390,41 +3435,46 @@ impl Application for App {
                 }
             }
             Message::IconThemeInstall(id) => {
-                let installed: HashSet<String> = self
-                    .icon_themes
-                    .iter()
-                    .map(|theme| theme.id.clone())
-                    .collect();
-                let plan = icon_theme_catalog::install_plan(&id, &installed);
-                if plan.is_empty() {
-                    return Task::none();
+                let plan = icon_theme_catalog::install_plan(&id, &self.installed_icon_theme_ids());
+                return self.install_icon_theme(id, plan, HashSet::new());
+            }
+            Message::IconThemeUpdate(id) => {
+                let plan = icon_theme_catalog::update_plan(&id, &self.installed_icon_theme_ids());
+                return self.install_icon_theme(id.clone(), plan, HashSet::from([id]));
+            }
+            Message::IconThemeInstallCancel(id) => {
+                self.icon_theme_gallery.cancel(&id);
+            }
+            Message::IconThemeToggleDetails(id) => {
+                let details = &mut self.icon_theme_gallery.details;
+                if !details.remove(&id) {
+                    details.insert(id);
                 }
-                self.icon_theme_gallery
-                    .installs
-                    .insert(id.clone(), icon_theme_gallery::InstallState::Installing(0.0));
-                let (tx, rx) = cosmic::iced::futures::channel::mpsc::unbounded();
-                std::thread::spawn(move || {
-                    icon_theme_catalog::install(id, plan, |event| {
-                        let _ = tx.unbounded_send(event);
-                    });
-                });
-                return Task::run(rx, |event| {
-                    cosmic::action::app(Message::IconThemeInstallEvent(event))
-                });
             }
             Message::IconThemeInstallEvent(event) => {
                 let gallery = &mut self.icon_theme_gallery;
                 match event {
-                    icon_theme_catalog::InstallEvent::Progress(id, progress) => {
-                        gallery
-                            .installs
-                            .insert(id, icon_theme_gallery::InstallState::Installing(progress));
+                    icon_theme_catalog::InstallEvent::Progress(id, step) => {
+                        if let Some(icon_theme_gallery::InstallState::Installing {
+                            step: current,
+                            ..
+                        }) = gallery.installs.get_mut(&id)
+                        {
+                            *current = step;
+                        }
                     }
                     icon_theme_catalog::InstallEvent::Installed(id, ids) => {
                         gallery.installs.remove(&id);
-                        gallery.needs_restart.extend(ids);
+                        let updated = self.icon_themes.iter().any(|theme| theme.id == id);
+                        if !updated {
+                            gallery.needs_restart.extend(ids);
+                        }
                         self.load_icon_themes();
                         self.icon_theme_gallery.refresh(&self.icon_themes);
+                        if updated && id == self.icon_theme {
+                            // The active theme's files were swapped; redraw from the new ones.
+                            return self.icon_theme_changed();
+                        }
                     }
                     icon_theme_catalog::InstallEvent::Failed(id, error) => {
                         gallery
@@ -3433,6 +3483,9 @@ impl Application for App {
                         // Part of the plan may have landed before the failure.
                         self.load_icon_themes();
                         self.icon_theme_gallery.refresh(&self.icon_themes);
+                    }
+                    icon_theme_catalog::InstallEvent::Cancelled(id) => {
+                        gallery.installs.remove(&id);
                     }
                 }
             }

@@ -5,6 +5,8 @@
 //! that can be downloaded.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{self, icon};
@@ -12,8 +14,9 @@ use cosmic::{Element, theme};
 
 use crate::app::Message;
 use crate::fl;
-use crate::icon_theme_catalog::{self, CatalogTheme};
+use crate::icon_theme_catalog::{self, CatalogTheme, InstallError, Marker, Step};
 use crate::icon_themes::IconThemeInfo;
+use crate::tab::format_size;
 
 /// The icons a card shows, each with the names to try in order. Folders come first, since a
 /// file manager is mostly folders, then a few common file types. Keep in step with
@@ -62,20 +65,27 @@ fn themed_icon(_theme: &str, _name: &str) -> Option<icon::Handle> {
 /// Where a catalog theme's installation stands.
 #[derive(Clone, Debug)]
 pub enum InstallState {
-    /// Downloading, with the overall progress from 0 to 1.
-    Installing(f32),
-    Failed(String),
+    Installing {
+        step: Step,
+        /// Set by the Cancel button; the install thread polls it.
+        cancel: Arc<AtomicBool>,
+    },
+    Failed(InstallError),
 }
 
 #[derive(Default)]
 pub struct Gallery {
     /// Parallel to the installed themes last passed to [`Gallery::refresh`].
     installed_previews: Vec<Vec<icon::Handle>>,
+    /// Parallel to the installed themes: the marker of each theme this app installed.
+    markers: Vec<Option<Marker>>,
     /// Parallel to the catalog's themes; built once, since they are compiled in.
     catalog_previews: Vec<Vec<icon::Handle>>,
-    /// Installed themes that came from the catalog, and so may be removed.
-    removable: HashSet<String>,
+    /// Installed themes whose catalog archive has moved on since they were installed.
+    updatable: HashSet<String>,
     pub installs: HashMap<String, InstallState>,
+    /// Failed installs whose raw error text is shown.
+    pub details: HashSet<String>,
     /// Themes installed since launch, which the icon lookup cannot see until a restart.
     pub needs_restart: HashSet<String>,
 }
@@ -103,16 +113,35 @@ impl Gallery {
                 previews(theme)
             })
             .collect();
-        self.removable = themes
+        self.markers = themes
             .iter()
-            .filter(|theme| {
+            .map(|theme| {
                 theme
                     .roots
                     .first()
-                    .is_some_and(|root| icon_theme_catalog::is_catalog_install(root))
+                    .and_then(|root| icon_theme_catalog::read_marker(root))
             })
+            .collect();
+        self.updatable = themes
+            .iter()
+            .filter(|theme| icon_theme_catalog::needs_update(theme))
             .map(|theme| theme.id.clone())
             .collect();
+    }
+
+    /// Whether an install is running, which keeps the other Install buttons disabled: one at
+    /// a time keeps shared dependencies from racing.
+    fn installing(&self) -> bool {
+        self.installs
+            .values()
+            .any(|state| matches!(state, InstallState::Installing { .. }))
+    }
+
+    /// Flags the running install of `id` to stop.
+    pub fn cancel(&self, id: &str) {
+        if let Some(InstallState::Installing { cancel, .. }) = self.installs.get(id) {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     pub fn view<'a>(&'a self, themes: &'a [IconThemeInfo], active: &str) -> Element<'a, Message> {
@@ -130,41 +159,102 @@ impl Gallery {
         for (index, info) in themes.iter().enumerate() {
             let is_active = info.id == active;
             let needs_restart = self.needs_restart.contains(&info.id);
+            let marker = self.markers.get(index).and_then(Option::as_ref);
+            let entry = icon_theme_catalog::theme(&info.id);
             let mut title = vec![
                 widget::text::heading(info.name.as_str()).into(),
                 widget::space::horizontal().into(),
             ];
-            if needs_restart {
-                title.push(
-                    widget::button::suggested(fl!("restart-to-use"))
-                        .on_press(Message::Restart)
+            match self.installs.get(&info.id) {
+                Some(InstallState::Installing { step, cancel: _ }) => {
+                    title.push(progress_control(*step, &info.id));
+                }
+                Some(InstallState::Failed(_)) => {
+                    title.push(
+                        widget::button::standard(fl!("retry"))
+                            .on_press(Message::IconThemeUpdate(info.id.clone()))
+                            .into(),
+                    );
+                }
+                None if needs_restart => {
+                    title.push(
+                        widget::button::suggested(fl!("restart-to-use"))
+                            .on_press(Message::Restart)
+                            .into(),
+                    );
+                }
+                None => {
+                    if self.updatable.contains(&info.id) {
+                        title.push(
+                            widget::button::suggested(fl!("update"))
+                                .on_press_maybe(
+                                    (!self.installing())
+                                        .then(|| Message::IconThemeUpdate(info.id.clone())),
+                                )
+                                .into(),
+                        );
+                    }
+                    if is_active {
+                        title.push(
+                            widget::icon::from_name("object-select-symbolic")
+                                .size(16)
+                                .into(),
+                        );
+                    } else if marker.is_some() && !required_by_installed(&info.id, &installed) {
+                        title.push(
+                            widget::button::text(fl!("remove"))
+                                .on_press(Message::IconThemeRemove(info.id.clone()))
+                                .into(),
+                        );
+                    }
+                }
+            }
+            let mut rows = vec![
+                widget::row::with_children(title)
+                    .align_y(Alignment::Center)
+                    .spacing(space_xs)
+                    .into(),
+            ];
+            if let Some(InstallState::Installing { step, .. }) = self.installs.get(&info.id) {
+                rows.push(widget::text::caption(step_text(*step)).into());
+            } else {
+                rows.push(strip(self.installed_previews.get(index), space_xs));
+            }
+            if let Some(InstallState::Failed(error)) = self.installs.get(&info.id) {
+                rows.extend(self.error_rows(&info.id, error));
+            }
+            // Where the theme came from. The bundled set has no roots and says nothing.
+            let mut details: Vec<String> = Vec::new();
+            if let Some(entry) = entry.filter(|_| marker.is_some()) {
+                details.push(entry.license.clone());
+            }
+            let origin = match marker {
+                Some(marker) => match marker.file() {
+                    Some(file) => Some(fl!("installed-from-file", file = file)),
+                    None => marker
+                        .installed_date()
+                        .map(|date| fl!("installed-on", date = date)),
+                },
+                None if !info.roots.is_empty() => Some(fl!("installed-outside-app")),
+                None => None,
+            };
+            details.extend(origin);
+            if !details.is_empty() {
+                let mut caption = vec![
+                    widget::text::caption(details.join(" · "))
+                        .width(Length::Fill)
                         .into(),
-                );
-            } else if is_active {
-                title.push(
-                    widget::icon::from_name("object-select-symbolic")
-                        .size(16)
-                        .into(),
-                );
-            } else if self.removable.contains(&info.id)
-                && !required_by_installed(&info.id, &installed)
-            {
-                title.push(
-                    widget::button::text(fl!("remove"))
-                        .on_press(Message::IconThemeRemove(info.id.clone()))
+                ];
+                if let Some(entry) = entry.filter(|_| marker.is_some()) {
+                    caption.push(source_link(entry));
+                }
+                rows.push(
+                    widget::row::with_children(caption)
+                        .align_y(Alignment::Center)
                         .into(),
                 );
             }
-            let card = card(
-                vec![
-                    widget::row::with_children(title)
-                        .align_y(Alignment::Center)
-                        .into(),
-                    strip(self.installed_previews.get(index), space_xs),
-                ],
-                space_xs,
-                space_s,
-            );
+            let card = card(rows, space_xs, space_s);
             children.push(
                 widget::button::custom(card)
                     .class(theme::Button::Image)
@@ -210,7 +300,7 @@ impl Gallery {
             theme.license,
             fl!(
                 "icon-theme-download-size",
-                size = crate::tab::format_size(icon_theme_catalog::plan_size(&plan))
+                size = format_size(icon_theme_catalog::plan_size(&plan))
             )
         );
         let others: Vec<&str> = plan
@@ -226,21 +316,15 @@ impl Gallery {
             ));
         }
 
-        let control: Element<'a, Message> = match self.installs.get(&theme.id) {
-            Some(InstallState::Installing(progress)) => widget::determinate_linear(*progress)
-                .width(Length::Fixed(96.0))
-                .girth(Length::Fixed(4.0))
-                .into(),
+        let state = self.installs.get(&theme.id);
+        let control: Element<'a, Message> = match state {
+            Some(InstallState::Installing { step, .. }) => progress_control(*step, &theme.id),
             Some(InstallState::Failed(_)) => widget::button::standard(fl!("retry"))
                 .on_press(Message::IconThemeInstall(theme.id.clone()))
                 .into(),
             None => widget::button::standard(fl!("install"))
                 .on_press_maybe(
-                    // One install at a time keeps shared dependencies from racing.
-                    self.installs
-                        .values()
-                        .all(|state| !matches!(state, InstallState::Installing(_)))
-                        .then(|| Message::IconThemeInstall(theme.id.clone())),
+                    (!self.installing()).then(|| Message::IconThemeInstall(theme.id.clone())),
                 )
                 .into(),
         };
@@ -251,29 +335,107 @@ impl Gallery {
                 control,
             ])
             .align_y(Alignment::Center)
+            .spacing(space_xs)
             .into(),
-            strip(self.catalog_previews.get(index), space_xs),
+        ];
+        match state {
+            Some(InstallState::Installing { step, .. }) => {
+                rows.push(widget::text::caption(step_text(*step)).into());
+            }
+            Some(InstallState::Failed(error)) => {
+                rows.push(strip(self.catalog_previews.get(index), space_xs));
+                rows.extend(self.error_rows(&theme.id, error));
+            }
+            None => {
+                rows.push(strip(self.catalog_previews.get(index), space_xs));
+                rows.push(
+                    widget::row::with_children(vec![
+                        widget::text::caption(details).width(Length::Fill).into(),
+                        source_link(theme),
+                    ])
+                    .align_y(Alignment::Center)
+                    .into(),
+                );
+            }
+        }
+        card(rows, space_xs, space_s)
+    }
+
+    /// The sentence for a failed install, a Details link, and the raw text once it is pressed.
+    fn error_rows<'a>(&'a self, id: &str, error: &InstallError) -> Vec<Element<'a, Message>> {
+        let mut rows = vec![
             widget::row::with_children(vec![
-                widget::text::caption(details).width(Length::Fill).into(),
-                // The licences ask for the source to be a click away.
-                widget::button::link(fl!("icon-theme-source"))
-                    .on_press(Message::LaunchUrl(theme.homepage.clone()))
+                widget::text::caption(error_text(error))
+                    .width(Length::Fill)
+                    .into(),
+                widget::button::link(fl!("details"))
+                    .on_press(Message::IconThemeToggleDetails(id.to_string()))
                     .into(),
             ])
             .align_y(Alignment::Center)
             .into(),
         ];
-        if let Some(InstallState::Failed(error)) = self.installs.get(&theme.id) {
-            rows.push(
-                widget::text::caption(fl!(
-                    "icon-theme-install-failed",
-                    error = error.as_str()
-                ))
-                .into(),
-            );
+        if self.details.contains(id) {
+            rows.push(widget::text::caption(error.detail()).into());
         }
-        card(rows, space_xs, space_s)
+        rows
     }
+}
+
+/// A progress bar with a Cancel button beside it.
+fn progress_control<'a>(step: Step, id: &str) -> Element<'a, Message> {
+    widget::row::with_children(vec![
+        widget::determinate_linear(step.fraction())
+            .width(Length::Fixed(96.0))
+            .girth(Length::Fixed(4.0))
+            .into(),
+        widget::button::text(fl!("cancel"))
+            .on_press(Message::IconThemeInstallCancel(id.to_string()))
+            .into(),
+    ])
+    .align_y(Alignment::Center)
+    .spacing(theme::spacing().space_xs)
+    .into()
+}
+
+fn step_text(step: Step) -> String {
+    match step {
+        Step::Downloading { done, total } => fl!(
+            "downloading-progress",
+            done = format_size(done.min(total)),
+            total = format_size(total)
+        ),
+        Step::Extracting => fl!("extracting-theme"),
+    }
+}
+
+/// The plain sentence for an error; the raw text sits behind Details.
+fn error_text(error: &InstallError) -> String {
+    match error {
+        InstallError::Network { host, .. } => fl!("theme-install-failed-network", host = host),
+        InstallError::Moved => fl!("theme-install-failed-moved"),
+        InstallError::Checksum => fl!("theme-install-failed-checksum"),
+        InstallError::TooLarge(size) => {
+            fl!("theme-install-failed-too-large", size = format_size(*size))
+        }
+        InstallError::UnsafeArchive(_) => fl!("theme-install-failed-unsafe"),
+        InstallError::NoTheme => fl!("theme-install-failed-no-theme"),
+        InstallError::Exists(id) => fl!("theme-install-failed-exists", id = id),
+        InstallError::NoSpace { needed } => fl!(
+            "theme-install-failed-space",
+            dir = icon_theme_catalog::user_icons_dir().display().to_string(),
+            needed = format_size(*needed)
+        ),
+        InstallError::Cancelled => fl!("cancelled"),
+        InstallError::Io(detail) => fl!("theme-install-failed-other", error = detail),
+    }
+}
+
+/// The licences ask for the source to be a click away.
+fn source_link<'a>(theme: &CatalogTheme) -> Element<'a, Message> {
+    widget::button::link(fl!("icon-theme-source"))
+        .on_press(Message::LaunchUrl(theme.homepage.clone()))
+        .into()
 }
 
 /// Whether an installed theme needs `id` beside it.

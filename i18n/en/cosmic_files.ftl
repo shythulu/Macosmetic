@@ -361,11 +361,25 @@ available-icon-themes = Available to download
 available-icon-themes-description = Each theme comes from its own GitHub repository. A newly installed theme can be used after a restart.
 install = Install
 retry = Retry
+update = Update
 restart-to-use = Restart to use
 icon-theme-download-size = {$size} download
 icon-theme-also-installs = also installs {$names}
-icon-theme-install-failed = Install failed: {$error}
 icon-theme-source = Source
+installed-on = Installed {$date}
+installed-from-file = Installed from {$file}
+installed-outside-app = Installed outside the app
+downloading-progress = Downloading {$done} of {$total}
+extracting-theme = Extracting...
+theme-install-failed-network = Could not reach {$host}. Check your connection and try again.
+theme-install-failed-moved = The download link has moved. This will be fixed in an app update.
+theme-install-failed-checksum = The download does not match the catalog. Try again after the next app update.
+theme-install-failed-too-large = The archive is larger than the app allows ({$size}).
+theme-install-failed-unsafe = The archive contains unsafe paths and was not installed.
+theme-install-failed-no-theme = No icon theme was found in this file.
+theme-install-failed-exists = A theme named {$id} is already installed outside the app. Remove it first.
+theme-install-failed-space = Not enough space in {$dir} ({$needed} needed).
+theme-install-failed-other = Install failed: {$error}
 
 ### Type to search
 type-to-search = Type to search
