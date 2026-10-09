@@ -638,7 +638,10 @@ macro_rules! unit_actions {
         fn unit_action_name(action: &Action) -> Option<&'static str> {
             match action {
                 $(Action::$name => Some(stringify!($name)),)*
-                Action::RunContextAction(..) | Action::SetSort(..) | Action::ToggleSort(..) => None,
+                Action::RunContextAction(..)
+                | Action::SetFolderColour(..)
+                | Action::SetSort(..)
+                | Action::ToggleSort(..) => None,
                 #[cfg(feature = "desktop")]
                 Action::ExecEntryAction(..) => None,
             }
@@ -721,6 +724,9 @@ impl Action {
     pub fn config_name(&self) -> String {
         match self {
             Action::RunContextAction(index) => format!("RunContextAction({index})"),
+            Action::SetFolderColour(colour) => {
+                format!("SetFolderColour({})", colour.unwrap_or("None"))
+            }
             Action::SetSort(heading, ascending) => {
                 format!("SetSort({}, {})", heading_to_name(heading), ascending)
             }
@@ -741,6 +747,10 @@ impl Action {
                 }
                 #[cfg(feature = "desktop")]
                 ("ExecEntryAction", [index]) => Some(Action::ExecEntryAction(index.parse().ok()?)),
+                ("SetFolderColour", ["None"]) => Some(Action::SetFolderColour(None)),
+                ("SetFolderColour", [colour]) => Some(Action::SetFolderColour(Some(
+                    crate::folder_look::folder_colour(colour)?.id,
+                ))),
                 ("SetSort", [heading, ascending]) => Some(Action::SetSort(
                     heading_from_name(heading)?,
                     ascending.parse().ok()?,

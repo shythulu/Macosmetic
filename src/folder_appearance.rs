@@ -210,7 +210,7 @@ impl FolderAppearance {
                             .icon_size(SWATCH_SIZE)
                             .selected(current.as_ref() == Some(&look))
                             .on_press(Message::FolderLookSet(Some(look))),
-                        widget::text::body(colour_label(id)),
+                        widget::text::body(folder_look::colour_label(id)),
                         widget::tooltip::Position::Bottom,
                     )
                     .into()
@@ -301,21 +301,5 @@ impl FolderAppearance {
         ])
         .spacing(space_s)
         .into()
-    }
-}
-
-fn colour_label(id: &str) -> String {
-    match id {
-        "red" => fl!("colour-red"),
-        "orange" => fl!("colour-orange"),
-        "yellow" => fl!("colour-yellow"),
-        "green" => fl!("colour-green"),
-        "cyan" => fl!("colour-cyan"),
-        "blue" => fl!("colour-blue"),
-        "violet" => fl!("colour-violet"),
-        "magenta" => fl!("colour-magenta"),
-        "brown" => fl!("colour-brown"),
-        "grey" => fl!("colour-grey"),
-        other => other.to_string(),
     }
 }

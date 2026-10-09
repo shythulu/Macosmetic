@@ -244,6 +244,8 @@ pub enum Action {
     SelectFirst,
     SelectLast,
     SelectAll,
+    /// Give the selected folders this colour, or `None` to take their colour away.
+    SetFolderColour(Option<&'static str>),
     SetSort(HeadingOptions, bool),
     Settings,
     TabClose,
@@ -325,6 +327,7 @@ impl Action {
             Self::SelectAll => Message::TabMessage(entity_opt, tab::Message::SelectAll),
             Self::SelectFirst => Message::TabMessage(entity_opt, tab::Message::SelectFirst),
             Self::SelectLast => Message::TabMessage(entity_opt, tab::Message::SelectLast),
+            Self::SetFolderColour(colour) => Message::SetFolderColour(entity_opt, *colour),
             Self::SetSort(sort, dir) => {
                 Message::TabMessage(entity_opt, tab::Message::SetSort(*sort, *dir))
             }
@@ -526,6 +529,8 @@ pub enum Message {
     SearchActivate,
     SearchClear,
     SearchInput(String),
+    /// Colour the selected folders from the context menu, without opening the drawer.
+    SetFolderColour(Option<Entity>, Option<&'static str>),
     SetShowDetails(bool),
     SetShowRecents(bool),
     SetTypeToSearch(TypeToSearch),
@@ -3306,10 +3311,19 @@ impl Application for App {
                 self.file_dialog_opt = None;
             }
             Message::CustomizeFolder(entity_opt) => {
-                let paths: Vec<PathBuf> = self
+                let mut paths: Vec<PathBuf> = self
                     .selected_paths(entity_opt)
                     .filter(|path| path.is_dir())
                     .collect();
+                if paths.is_empty() {
+                    // From the background menu: customize the folder being viewed.
+                    let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                    if let Some(Location::Path(path)) =
+                        self.tab_model.data::<Tab>(entity).map(|tab| &tab.location)
+                    {
+                        paths.push(path.clone());
+                    }
+                }
                 if !paths.is_empty() {
                     self.load_icon_themes();
                     self.folder_appearance = Some(FolderAppearance::new(paths, &self.icon_themes));
@@ -3319,6 +3333,23 @@ impl Application for App {
             }
             Message::FolderLookChooseImage => {
                 return self.choose_folder_image();
+            }
+            Message::SetFolderColour(entity_opt, colour) => {
+                let mut looks = self.config.folder_looks.clone();
+                for path in self.selected_paths(entity_opt).filter(|path| path.is_dir()) {
+                    match colour {
+                        Some(id) => {
+                            looks.insert(path, FolderLook::Colour(id.to_string()));
+                        }
+                        // "None" takes the colour away; an icon or image look stays.
+                        None => {
+                            if matches!(looks.get(&path), Some(FolderLook::Colour(_))) {
+                                looks.remove(&path);
+                            }
+                        }
+                    }
+                }
+                return self.set_folder_looks(looks);
             }
             Message::FolderLookIconSet(index) => {
                 if let Some(page) = &mut self.folder_appearance {

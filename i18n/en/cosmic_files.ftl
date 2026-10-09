@@ -318,9 +318,11 @@ error = Error
 
 ## Customize folder
 customize-folder = Customize folder...
+customize-this-folder = Customize this folder...
 folder-appearance = Folder appearance
 folders-selected = {$count} folders
 folder-colour = Colour
+colour-none = None
 folder-icon = Icon
 icon-set = Icon set
 icon-set-current = Current icon theme

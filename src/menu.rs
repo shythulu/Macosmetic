@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use cosmic::{Element, theme};
 use cosmic::app::Core;
 use cosmic::iced::keyboard::Modifiers;
 use cosmic::widget::menu::action::MenuAction;
 use cosmic::widget::menu::key_bind::KeyBind;
 use cosmic::widget::menu::{self, ItemHeight, ItemWidth, MenuBar};
 use cosmic::widget::{self, responsive_menu_bar};
+use cosmic::{Element, theme};
 use i18n_embed::LanguageLoader;
 use mime_guess::Mime;
 use std::collections::HashMap;
@@ -15,6 +15,7 @@ use std::sync::LazyLock;
 use crate::app::{Action, Message};
 use crate::config::{Config, ContextActionPreset};
 use crate::fl;
+use crate::folder_look::{self, FOLDER_COLOURS, FolderLook};
 use crate::key_bind::{menu_key_bind, menu_key_binds};
 use crate::tab::{
     self, HeadingOptions, ItemMetadata, Location, LocationMenuAction, SearchLocation, Tab,
@@ -46,6 +47,40 @@ impl MenuAction for TabAction {
     fn message(&self) -> tab::Message {
         tab::Message::ContextAction(self.0)
     }
+}
+
+/// The "Folder colour" submenu: one entry per colour with a small coloured folder, then
+/// "None". The colour every selected folder shares is checked; a mixed selection checks
+/// nothing. Picking an entry colours every selected folder without opening the drawer.
+fn folder_colour_menu(selected: &[&std::path::Path]) -> menu::Item<TabAction, String> {
+    const ICON_SIZE: u16 = 14;
+    let shared = folder_look::shared_stored_look(selected.iter().copied());
+    let shared = shared.colour();
+    let mut children: Vec<menu::Item<TabAction, String>> = FOLDER_COLOURS
+        .iter()
+        .map(|colour| {
+            let look = FolderLook::Colour(colour.id.to_string());
+            let entry = menu::Entry::new(
+                folder_look::colour_label(colour.id),
+                TabAction(Action::SetFolderColour(Some(colour.id))),
+            )
+            .checked(shared == Some(Some(colour.id)));
+            // A raster-only theme has no coloured folder to show; the text still reads.
+            menu::Item::Entry(
+                match folder_look::folder_handle(&look, "folder", ICON_SIZE) {
+                    Some(handle) => entry.icon(handle),
+                    None => entry.reserve_icon(),
+                },
+            )
+        })
+        .collect();
+    children.push(menu::Item::Divider);
+    children.push(menu::Item::Entry(
+        menu::Entry::new(fl!("colour-none"), TabAction(Action::SetFolderColour(None)))
+            .reserve_icon()
+            .checked(shared == Some(None)),
+    ));
+    menu::Item::Folder(fl!("folder-colour"), children)
 }
 
 pub fn context_menu<'a>(
@@ -85,6 +120,7 @@ pub fn context_menu<'a>(
     let mut selected_types: Vec<Mime> = vec![];
     let mut selected_mount_point = 0;
     let mut any_trash_item = false;
+    let mut selected_dir_paths: Vec<&std::path::Path> = Vec::new();
     if let Some(items) = tab.items_opt() {
         for item in items {
             if item.selected {
@@ -92,6 +128,9 @@ pub fn context_menu<'a>(
                 if item.metadata.is_dir() {
                     selected_mount_point += i32::from(item.is_mount_point);
                     selected_dir += 1;
+                    if let Some(Location::Path(path)) = &item.location_opt {
+                        selected_dir_paths.push(path);
+                    }
                 }
                 match &item.location_opt {
                     Some(Location::Trash) | Some(Location::Search(SearchLocation::Trash, ..)) => {
@@ -244,6 +283,8 @@ pub fn context_menu<'a>(
                     && !any_trash_item
                     && matches!(tab.mode, tab::Mode::App)
                 {
+                    children.push(menu::Item::Divider);
+                    children.push(folder_colour_menu(&selected_dir_paths));
                     children.push(menu_item(fl!("customize-folder"), Action::CustomizeFolder));
                 }
                 if any_trash_item {
@@ -297,6 +338,15 @@ pub fn context_menu<'a>(
                     children.push(menu_item(fl!("paste"), Action::Paste));
                 } else {
                     children.push(menu_item_disabled(fl!("paste"), Action::Paste));
+                }
+
+                // The folder being viewed can be customized from its own background.
+                if matches!(tab.mode, tab::Mode::App) && matches!(tab.location, Location::Path(_)) {
+                    children.push(menu::Item::Divider);
+                    children.push(menu_item(
+                        fl!("customize-this-folder"),
+                        Action::CustomizeFolder,
+                    ));
                 }
 
                 //TODO: only show if cosmic-settings is found?
