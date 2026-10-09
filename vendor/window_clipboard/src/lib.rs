@@ -50,6 +50,11 @@ mod platform;
 
 pub mod dnd;
 
+// The macOS drag state has no AppKit dependency, so exercise it on Linux too.
+#[cfg(all(test, not(target_os = "macos")))]
+#[path = "platform/macos/state.rs"]
+mod macos_dnd_state_tests;
+
 use mime::ClipboardStoreData;
 use raw_window_handle::HasDisplayHandle;
 use std::error::Error;

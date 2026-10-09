@@ -18,7 +18,7 @@ app, no drop from Finder and no drag to another app ever reached a widget.
 | Path | Change |
 |---|---|
 | `Cargo.toml` | macOS dependencies: `log`, `objc2`, `objc2-app-kit`, `objc2-foundation`, `block2` (versions already in the app's lock). Dev-dependencies and `examples/` removed; they pulled winit 0.29 for nothing. |
-| `src/lib.rs` | macOS platform module path is now `platform/macos/mod.rs`. |
+| `src/lib.rs` | macOS platform module path is now `platform/macos/mod.rs`; the pure state tests also run on other platforms. |
 | `src/platform/macos/mod.rs` | the old stub, now a real `DndProvider`: sender storage, destination registry, `start_dnd`, `set_action`, `peek_offer`. |
 | `src/platform/macos/state.rs` | new. Pure state machine with unit tests. Mirrors the event sequence of `smithay-clipboard/src/dnd/state.rs`. |
 | `src/platform/macos/appkit.rs` | new. `NSEvent` local monitor that drives in-process drags without file URLs (tab reordering); view geometry. |
