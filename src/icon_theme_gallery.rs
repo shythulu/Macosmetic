@@ -39,11 +39,7 @@ const PREVIEW_SIZE: u16 = 32;
 pub fn previews(theme: &IconThemeInfo) -> Vec<icon::Handle> {
     PREVIEW_ICONS
         .iter()
-        .filter_map(|names| {
-            names
-                .iter()
-                .find_map(|name| themed_icon(&theme.id, name))
-        })
+        .filter_map(|names| names.iter().find_map(|name| themed_icon(&theme.id, name)))
         .collect()
 }
 
@@ -121,7 +117,10 @@ impl Gallery {
             .map(|theme| theme.id.clone())
             .collect();
         self.hidden_installed = icon_theme_catalog::installed_ids();
-        self.installed_colours = themes.iter().map(crate::icon_themes::folder_colours).collect();
+        self.installed_colours = themes
+            .iter()
+            .map(crate::icon_themes::folder_colours)
+            .collect();
     }
 
     /// Whether an install is running, which keeps the other Install buttons disabled: one at
@@ -187,7 +186,9 @@ impl Gallery {
                 widget::text::heading(info.name.as_str()).into(),
                 widget::space::horizontal().into(),
             ];
-            title.extend(colours_badge(self.installed_colours.get(index).copied().unwrap_or(0)));
+            title.extend(colours_badge(
+                self.installed_colours.get(index).copied().unwrap_or(0),
+            ));
             match self.installs.get(&info.id) {
                 Some(InstallState::Installing { step, cancel: _ }) => {
                     title.push(progress_control(*step, &info.id));
@@ -341,10 +342,7 @@ impl Gallery {
             .collect();
         if !others.is_empty() {
             details.push_str(" · ");
-            details.push_str(&fl!(
-                "icon-theme-also-installs",
-                names = others.join(", ")
-            ));
+            details.push_str(&fl!("icon-theme-also-installs", names = others.join(", ")));
         }
 
         let state = self.installs.get(&theme.id);
@@ -489,11 +487,7 @@ fn strip<'a>(icons: Option<&'a Vec<icon::Handle>>, spacing: u16) -> Element<'a, 
         icons
             .map_or(&[][..], Vec::as_slice)
             .iter()
-            .map(|handle| {
-                widget::icon::icon(handle.clone())
-                    .size(PREVIEW_SIZE)
-                    .into()
-            })
+            .map(|handle| widget::icon::icon(handle.clone()).size(PREVIEW_SIZE).into())
             .collect(),
     )
     .row_spacing(spacing)

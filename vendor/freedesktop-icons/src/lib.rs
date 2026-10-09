@@ -55,8 +55,8 @@ use memmap2::Mmap;
 use theme::BASE_PATHS;
 
 use crate::cache::{CACHE, CacheEntry};
-use crate::theme::{Theme, ThemeMap, themes, try_build_icon_path};
 pub use crate::theme::reload_themes;
+use crate::theme::{Theme, ThemeMap, themes, try_build_icon_path};
 use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
 use std::io::BufRead;

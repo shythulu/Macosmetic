@@ -26,9 +26,9 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -270,7 +270,10 @@ pub fn needs_update(theme: &IconThemeInfo) -> bool {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstallError {
     /// curl could not reach or keep talking to the host.
-    Network { host: String, detail: String },
+    Network {
+        host: String,
+        detail: String,
+    },
     /// The pinned URL answers 404 or 410: the catalog has to be regenerated.
     Moved,
     /// The download or the unpacked theme passed the cap, in bytes.
@@ -282,7 +285,9 @@ pub enum InstallError {
     NoTheme,
     /// A theme with this id is installed, and not by this app.
     Exists(String),
-    NoSpace { needed: u64 },
+    NoSpace {
+        needed: u64,
+    },
     Cancelled,
     Io(String),
 }
@@ -328,7 +333,10 @@ impl From<io::Error> for InstallError {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Step {
     /// Bytes received so far of all the plan's downloads.
-    Downloading { done: u64, total: u64 },
+    Downloading {
+        done: u64,
+        total: u64,
+    },
     Extracting,
 }
 
@@ -423,7 +431,12 @@ fn install_in(
             &file,
             (archive.size as f64 * DOWNLOAD_SLACK) as u64,
             cancel,
-            |bytes| progress(Step::Downloading { done: done + bytes, total }),
+            |bytes| {
+                progress(Step::Downloading {
+                    done: done + bytes,
+                    total,
+                })
+            },
         )?;
         verify_sha256(&file, &archive.sha256)?;
         done += archive.size;
@@ -569,7 +582,10 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<(), InstallError> {
     if actual == expected {
         Ok(())
     } else {
-        log::warn!("checksum mismatch for {}: expected {expected}, got {actual}", path.display());
+        log::warn!(
+            "checksum mismatch for {}: expected {expected}, got {actual}",
+            path.display()
+        );
         Err(InstallError::Checksum)
     }
 }
@@ -830,7 +846,8 @@ fn zip_entries(
     file: File,
     f: &mut dyn FnMut(&Path, EntryKind, u64, &mut dyn Read) -> Result<(), InstallError>,
 ) -> Result<(), InstallError> {
-    let mut archive = zip::ZipArchive::new(file).map_err(|err| InstallError::Io(err.to_string()))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|err| InstallError::Io(err.to_string()))?;
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
@@ -1038,12 +1055,20 @@ impl Source {
         let Some(shallowest) = with_index.iter().map(|dir| dir.matches('/').count()).min() else {
             return Ok(Vec::new());
         };
-        let shallowest = if with_index.contains(&String::new()) { 0 } else { shallowest + 1 };
+        let shallowest = if with_index.contains(&String::new()) {
+            0
+        } else {
+            shallowest + 1
+        };
         let own_name = self.name();
         Ok(with_index
             .into_iter()
             .filter(|dir| {
-                let depth = if dir.is_empty() { 0 } else { dir.matches('/').count() + 1 };
+                let depth = if dir.is_empty() {
+                    0
+                } else {
+                    dir.matches('/').count() + 1
+                };
                 depth == shallowest
             })
             .map(|dir| {
@@ -1095,7 +1120,10 @@ pub fn install_from_path(path: PathBuf, emit: impl Fn(InstallEvent)) {
     match install_file_in(&user_icons_dir(), &path) {
         Ok(ids) => emit(InstallEvent::Installed(key, ids)),
         Err(err) => {
-            log::warn!("installing icon themes from {} failed: {err}", path.display());
+            log::warn!(
+                "installing icon themes from {} failed: {err}",
+                path.display()
+            );
             emit(InstallEvent::Failed(key, err));
         }
     }
@@ -1133,7 +1161,10 @@ fn install_file_in(icons_dir: &Path, path: &Path) -> Result<Vec<String>, Install
         if !staged.join("index.theme").is_file() {
             return Err(InstallError::NoTheme);
         }
-        write_marker(&staged, &Marker::new(&sha256, format!("file:{}", source.name())))?;
+        write_marker(
+            &staged,
+            &Marker::new(&sha256, format!("file:{}", source.name())),
+        )?;
         let installed = icons_dir.join(&target.id);
         if installed.exists() {
             let removing = retire(&installed)?;
@@ -1169,15 +1200,15 @@ fn normal_path(path: &Path) -> Option<String> {
 
 /// Every proper ancestor of a `/`-joined path, nearest first.
 fn ancestors(path: &str) -> impl Iterator<Item = &str> {
-    path.match_indices('/').rev().map(move |(at, _)| &path[..at])
+    path.match_indices('/')
+        .rev()
+        .map(move |(at, _)| &path[..at])
 }
 
 /// Whether the symlink at `<icons>/<id>/<relative>` pointing to `link` resolves inside
 /// `<icons>`.
 fn link_stays_inside(id: &str, relative: &str, link: &Path) -> bool {
-    let mut position: Vec<&str> = std::iter::once(id)
-        .chain(relative.split('/'))
-        .collect();
+    let mut position: Vec<&str> = std::iter::once(id).chain(relative.split('/')).collect();
     position.pop();
     for component in link.components() {
         match component {
@@ -1310,9 +1341,17 @@ mod tests {
     #[test]
     fn extract_keeps_safe_entries_and_drops_the_rest() {
         let mut builder = tar::Builder::new(Vec::new());
-        add_file(&mut builder, "pkg-1.0/Theme/index.theme", b"[Icon Theme]\nName=Theme\n");
+        add_file(
+            &mut builder,
+            "pkg-1.0/Theme/index.theme",
+            b"[Icon Theme]\nName=Theme\n",
+        );
         add_file(&mut builder, "pkg-1.0/Theme/places/folder.svg", b"<svg/>");
-        add_link(&mut builder, "pkg-1.0/Theme/places/inode-directory.svg", "folder.svg");
+        add_link(
+            &mut builder,
+            "pkg-1.0/Theme/places/inode-directory.svg",
+            "folder.svg",
+        );
         // A sibling theme the variant links into is allowed; leaving the icon dir is not.
         add_link(&mut builder, "pkg-1.0/Theme/apps", "../Base/apps");
         add_link(&mut builder, "pkg-1.0/Theme/escape", "../../../etc");
@@ -1335,12 +1374,18 @@ mod tests {
         .unwrap();
         let theme = dest.path().join("Theme");
 
-        assert_eq!(fs::read(theme.join("places/folder.svg")).unwrap(), b"<svg/>");
+        assert_eq!(
+            fs::read(theme.join("places/folder.svg")).unwrap(),
+            b"<svg/>"
+        );
         assert_eq!(
             fs::read_link(theme.join("places/inode-directory.svg")).unwrap(),
             Path::new("folder.svg")
         );
-        assert_eq!(fs::read_link(theme.join("apps")).unwrap(), Path::new("../Base/apps"));
+        assert_eq!(
+            fs::read_link(theme.join("apps")).unwrap(),
+            Path::new("../Base/apps")
+        );
         assert!(fs::symlink_metadata(theme.join("escape")).is_err());
         assert!(fs::symlink_metadata(theme.join("absolute")).is_err());
         assert!(!dest.path().join("Base").exists());
@@ -1360,14 +1405,32 @@ mod tests {
     #[test]
     fn extract_takes_a_root_theme_and_an_outside_index_theme() {
         let mut builder = tar::Builder::new(Vec::new());
-        add_file(&mut builder, "repo-1/index.theme", b"[Icon Theme]\nName=Root\n");
+        add_file(
+            &mut builder,
+            "repo-1/index.theme",
+            b"[Icon Theme]\nName=Root\n",
+        );
         add_file(&mut builder, "repo-1/places/folder.svg", b"<svg/>");
-        add_file(&mut builder, "adwaita-51/index.theme", b"[Icon Theme]\nName=Adwaita\n");
-        add_file(&mut builder, "adwaita-51/Adwaita/scalable/folder.svg", b"<svg/>");
+        add_file(
+            &mut builder,
+            "adwaita-51/index.theme",
+            b"[Icon Theme]\nName=Adwaita\n",
+        );
+        add_file(
+            &mut builder,
+            "adwaita-51/Adwaita/scalable/folder.svg",
+            b"<svg/>",
+        );
         let root = builder.into_inner().unwrap();
 
         let dest = tempfile::tempdir().unwrap();
-        extract(&root[..], &[target("repo-1", "Root")], dest.path(), &limits()).unwrap();
+        extract(
+            &root[..],
+            &[target("repo-1", "Root")],
+            dest.path(),
+            &limits(),
+        )
+        .unwrap();
         assert!(dest.path().join("Root/index.theme").is_file());
         assert!(dest.path().join("Root/places/folder.svg").is_file());
 
@@ -1444,8 +1507,16 @@ mod tests {
     #[test]
     fn link_stays_inside_measures_from_the_installed_location() {
         assert!(link_stays_inside("T", "a/b.svg", Path::new("c.svg")));
-        assert!(link_stays_inside("T", "16x16", Path::new("../Papirus/16x16")));
-        assert!(link_stays_inside("T", "16x16/apps", Path::new("../../Papirus/16x16/apps")));
+        assert!(link_stays_inside(
+            "T",
+            "16x16",
+            Path::new("../Papirus/16x16")
+        ));
+        assert!(link_stays_inside(
+            "T",
+            "16x16/apps",
+            Path::new("../../Papirus/16x16/apps")
+        ));
         assert!(!link_stays_inside("T", "16x16", Path::new("../../x")));
         assert!(!link_stays_inside("T", "a", Path::new("/usr/share/icons")));
     }
@@ -1458,7 +1529,11 @@ mod tests {
             assert!(theme.archive < catalog.archives.len(), "{}", theme.id);
             assert_eq!(previews(theme).len(), theme.previews.len(), "{}", theme.id);
             for parent in &theme.requires {
-                assert!(super::theme(parent).is_some(), "{} needs {parent}", theme.id);
+                assert!(
+                    super::theme(parent).is_some(),
+                    "{} needs {parent}",
+                    theme.id
+                );
             }
         }
 
@@ -1489,8 +1564,11 @@ mod tests {
     fn fake_curl(dir: &Path, code: i32) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let program = dir.join("curl");
-        fs::write(&program, format!("#!/bin/sh\necho 'curl: ({code}) fake' >&2\nexit {code}\n"))
-            .unwrap();
+        fs::write(
+            &program,
+            format!("#!/bin/sh\necho 'curl: ({code}) fake' >&2\nexit {code}\n"),
+        )
+        .unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
         program
     }
@@ -1503,7 +1581,15 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let url = "https://codeload.github.com/x/y/tar.gz/z";
         let run = |code| {
-            download(&fake_curl(dir.path(), code), url, &dest, 10, &cancel, |_| {}).unwrap_err()
+            download(
+                &fake_curl(dir.path(), code),
+                url,
+                &dest,
+                10,
+                &cancel,
+                |_| {},
+            )
+            .unwrap_err()
         };
         assert_eq!(
             run(6),
@@ -1513,9 +1599,17 @@ mod tests {
             }
         );
         assert_eq!(run(63), InstallError::TooLarge(10));
-        assert_eq!(run(2), InstallError::Io("download failed: curl: (2) fake".to_string()));
         assert_eq!(
-            curl_error(Some(22), "curl: (22) The requested URL returned error: 404", url, 10),
+            run(2),
+            InstallError::Io("download failed: curl: (2) fake".to_string())
+        );
+        assert_eq!(
+            curl_error(
+                Some(22),
+                "curl: (22) The requested URL returned error: 404",
+                url,
+                10
+            ),
             InstallError::Moved
         );
     }
@@ -1535,7 +1629,14 @@ mod tests {
             flag.store(true, Ordering::Relaxed);
         });
         let started = std::time::Instant::now();
-        let result = download(&program, "https://x", &dir.path().join("out"), 10, &cancel, |_| {});
+        let result = download(
+            &program,
+            "https://x",
+            &dir.path().join("out"),
+            10,
+            &cancel,
+            |_| {},
+        );
         assert_eq!(result.unwrap_err(), InstallError::Cancelled);
         assert!(started.elapsed() < Duration::from_secs(5));
     }
@@ -1552,7 +1653,11 @@ mod tests {
         assert_eq!(old.installed_date(), None);
         assert!(is_catalog_install(&theme));
 
-        write_marker(&theme, &Marker::new("def456", "file:Sweet.tar.gz".to_string())).unwrap();
+        write_marker(
+            &theme,
+            &Marker::new("def456", "file:Sweet.tar.gz".to_string()),
+        )
+        .unwrap();
         let new = read_marker(&theme).unwrap();
         assert_eq!(new.sha256, "def456");
         assert_eq!(new.file(), Some("Sweet.tar.gz"));
@@ -1635,8 +1740,7 @@ mod tests {
 
     fn gzip(data: &[u8]) -> Vec<u8> {
         use std::io::Write;
-        let mut encoder =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         encoder.write_all(data).unwrap();
         encoder.finish().unwrap()
     }
@@ -1661,15 +1765,29 @@ mod tests {
         assert_eq!(
             ids,
             [
-                ("Sweet-folders-40a5d36/Sweet-Blue".to_string(), "Sweet-Blue".to_string()),
-                ("Sweet-folders-40a5d36/Sweet-Teal".to_string(), "Sweet-Teal".to_string()),
+                (
+                    "Sweet-folders-40a5d36/Sweet-Blue".to_string(),
+                    "Sweet-Blue".to_string()
+                ),
+                (
+                    "Sweet-folders-40a5d36/Sweet-Teal".to_string(),
+                    "Sweet-Teal".to_string()
+                ),
             ]
         );
 
         // One theme at the root of a wrapper directory: the wrapper is the theme.
         let mut builder = tar::Builder::new(Vec::new());
-        add_file(&mut builder, "candy-icons-83512fbcadc/index.theme", b"[Icon Theme]\n");
-        add_file(&mut builder, "candy-icons-83512fbcadc/places/folder.svg", b"<svg/>");
+        add_file(
+            &mut builder,
+            "candy-icons-83512fbcadc/index.theme",
+            b"[Icon Theme]\n",
+        );
+        add_file(
+            &mut builder,
+            "candy-icons-83512fbcadc/places/folder.svg",
+            b"<svg/>",
+        );
         let plain = dir.path().join("candy.tar");
         fs::write(&plain, builder.into_inner().unwrap()).unwrap();
         let source = Source::open(&plain).unwrap();
@@ -1684,7 +1802,13 @@ mod tests {
         add_file(&mut builder, "index.theme", b"[Icon Theme]\n");
         let empty = dir.path().join("empty.tar");
         fs::write(&empty, builder.into_inner().unwrap()).unwrap();
-        assert!(Source::open(&empty).unwrap().detect_themes().unwrap().is_empty());
+        assert!(
+            Source::open(&empty)
+                .unwrap()
+                .detect_themes()
+                .unwrap()
+                .is_empty()
+        );
 
         assert_eq!(theme_id("MoreWaita-main.zip"), "MoreWaita");
         assert_eq!(theme_id("Papirus-Dark"), "Papirus-Dark");
@@ -1718,16 +1842,29 @@ mod tests {
             let mut writer = zip::ZipWriter::new(File::create(&zipped).unwrap());
             let options = zip::write::SimpleFileOptions::default();
             writer.add_directory("Sweet-Blue/", options).unwrap();
-            writer.start_file("Sweet-Blue/index.theme", options).unwrap();
-            writer.write_all(b"[Icon Theme]\nName=Sweet-Blue\n").unwrap();
-            writer.start_file("Sweet-Blue/places/folder.svg", options).unwrap();
+            writer
+                .start_file("Sweet-Blue/index.theme", options)
+                .unwrap();
+            writer
+                .write_all(b"[Icon Theme]\nName=Sweet-Blue\n")
+                .unwrap();
+            writer
+                .start_file("Sweet-Blue/places/folder.svg", options)
+                .unwrap();
             writer.write_all(b"<svg>zip</svg>").unwrap();
             writer
-                .add_symlink("Sweet-Blue/places/inode-directory.svg", "folder.svg", options)
+                .add_symlink(
+                    "Sweet-Blue/places/inode-directory.svg",
+                    "folder.svg",
+                    options,
+                )
                 .unwrap();
             writer.finish().unwrap();
         }
-        assert_eq!(install_file_in(icons.path(), &zipped).unwrap(), ["Sweet-Blue"]);
+        assert_eq!(
+            install_file_in(icons.path(), &zipped).unwrap(),
+            ["Sweet-Blue"]
+        );
         assert_eq!(
             fs::read(icons.path().join("Sweet-Blue/places/folder.svg")).unwrap(),
             b"<svg>zip</svg>"
@@ -1746,11 +1883,27 @@ mod tests {
         // An unpacked folder, dropped as is.
         let folder = dir.path().join("Sweet-Purple");
         fs::create_dir_all(folder.join("places")).unwrap();
-        fs::write(folder.join("index.theme"), "[Icon Theme]\nName=Sweet-Purple\n").unwrap();
+        fs::write(
+            folder.join("index.theme"),
+            "[Icon Theme]\nName=Sweet-Purple\n",
+        )
+        .unwrap();
         fs::write(folder.join("places/folder.svg"), "<svg/>").unwrap();
-        symlink(Path::new("folder.svg"), &folder.join("places/inode-directory.svg")).unwrap();
-        assert_eq!(install_file_in(icons.path(), &folder).unwrap(), ["Sweet-Purple"]);
-        assert!(icons.path().join("Sweet-Purple/places/folder.svg").is_file());
+        symlink(
+            Path::new("folder.svg"),
+            &folder.join("places/inode-directory.svg"),
+        )
+        .unwrap();
+        assert_eq!(
+            install_file_in(icons.path(), &folder).unwrap(),
+            ["Sweet-Purple"]
+        );
+        assert!(
+            icons
+                .path()
+                .join("Sweet-Purple/places/folder.svg")
+                .is_file()
+        );
         assert_eq!(
             fs::read_link(icons.path().join("Sweet-Purple/places/inode-directory.svg")).unwrap(),
             Path::new("folder.svg")
@@ -1781,7 +1934,9 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default();
             writer.start_file("Evil/index.theme", options).unwrap();
             writer.write_all(b"[Icon Theme]\n").unwrap();
-            writer.start_file("Evil/../../escaped.svg", options).unwrap();
+            writer
+                .start_file("Evil/../../escaped.svg", options)
+                .unwrap();
             writer.write_all(b"<svg/>").unwrap();
             writer.add_symlink("Evil/etc", "/etc", options).unwrap();
             writer.finish().unwrap();

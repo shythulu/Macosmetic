@@ -396,7 +396,10 @@ mod tests {
         assert_eq!(folder_colours(theme), 0);
         write(&base.join("T/48x48/places/folder-red-documents.svg"), "");
         write(&base.join("T/48x48/places/folder-blue-documents.svg"), "");
-        write(&base.join("T/scalable/Places/folder-blue-documents.svg"), "");
+        write(
+            &base.join("T/scalable/Places/folder-blue-documents.svg"),
+            "",
+        );
         assert_eq!(folder_colours(theme), 2);
         assert_eq!(
             folder_icon_names(theme),
