@@ -7965,7 +7965,7 @@ pub(crate) mod test_utils {
     use std::path::Path;
 
     use log::{debug, trace};
-    use tempfile::{TempDir, tempdir};
+    use tempfile::{TempDir, tempdir_in};
 
     use crate::config::{IconSizes, TabConfig, ThumbCfg};
     use crate::tab::Item;
@@ -8012,6 +8012,12 @@ pub(crate) mod test_utils {
     /// * `dirs` - Number of directories to create
     /// * `nested` - Number of nested directories to create in new dirs
     /// * `name_len` - Length of randomized directory names
+    /// A temp dir under the canonical temp path. Tabs canonicalize their location, and
+    /// on macOS the temp dir is under `/var`, a symlink to `/private/var`.
+    fn canonical_tempdir() -> io::Result<TempDir> {
+        tempdir_in(fs::canonicalize(std::env::temp_dir())?)
+    }
+
     pub fn simple_fs(
         files: usize,
         hidden: usize,
@@ -8021,7 +8027,7 @@ pub(crate) mod test_utils {
     ) -> io::Result<TempDir> {
         // Files created inside of a TempDir are deleted with the directory
         // TempDir won't leak resources as long as the destructor runs
-        let root = tempdir()?;
+        let root = canonical_tempdir()?;
         debug!("Root temp directory: {}", root.as_ref().display());
         trace!(
             "Creating {files} files and {hidden} hidden files in {dirs} temp dirs with {nested} nested temp dirs"
@@ -8066,7 +8072,7 @@ pub(crate) mod test_utils {
 
     /// Empty file hierarchy
     pub fn empty_fs() -> io::Result<TempDir> {
-        tempdir()
+        canonical_tempdir()
     }
 
     /// Sort files.
