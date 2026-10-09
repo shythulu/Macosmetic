@@ -494,6 +494,10 @@ pub enum Message {
     ExtractToResult(DialogResult),
     #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
     Focused(window::Id),
+    /// The default folder opener: the paths the system asks this app to open, and the setting
+    /// that makes it the app folders open in.
+    #[cfg(target_os = "macos")]
+    FolderOpener(crate::folder_opener_macos::Message),
     /// Hide the application, the way Cmd+H hides any other Mac app. Nothing to hide elsewhere.
     Hide,
     Key(window::Id, Modifiers, Key, Physical, Option<SmolStr>),
@@ -937,6 +941,13 @@ pub struct App {
     /// Dock comes back to it. Nothing on disk remembers a location between runs.
     #[cfg(target_os = "macos")]
     last_tab_location: Option<Location>,
+    #[cfg(target_os = "macos")]
+    folder_opener: crate::folder_opener_macos::FolderOpener,
+    /// The tab `init` opened for want of anything else, and where. The folder the system then
+    /// delivers is the one this process was started for, so it replaces that tab rather than
+    /// sitting beside it, as long as the tab is still alone and has not been navigated.
+    #[cfg(target_os = "macos")]
+    launch_tab: Option<(Entity, Location)>,
     scrollable_id: widget::Id,
     /// Physical pixels per logical pixel, per window. A window missing from the map has not
     /// reported its scale factor yet and is treated as 1.0.
@@ -2596,7 +2607,8 @@ impl App {
         let tab_config = self.config.tab;
 
         // TODO: Should dialog be updated here too?
-        settings::view_column(vec![
+        #[allow(unused_mut)]
+        let mut sections = vec![
             settings::section()
                 .title(fl!("appearance"))
                 .add({
@@ -2671,8 +2683,10 @@ impl App {
                         .toggler(self.config.show_recents, Message::SetShowRecents)
                 })
                 .into(),
-        ])
-        .into()
+        ];
+        #[cfg(target_os = "macos")]
+        sections.push(self.folder_opener.view().map(Message::FolderOpener));
+        settings::view_column(sections).into()
     }
 
     // Update favorites based on renaming or moving dirs.
@@ -3035,6 +3049,10 @@ impl Application for App {
             swipe: crate::gesture::Swipe::default(),
             #[cfg(target_os = "macos")]
             zoom: crate::gesture::Zoom::default(),
+            #[cfg(target_os = "macos")]
+            folder_opener: crate::folder_opener_macos::FolderOpener::new(),
+            #[cfg(target_os = "macos")]
+            launch_tab: None,
             nav_bar_context_id: segmented_button::Entity::null(),
             nav_model: segmented_button::ModelBuilder::default().build(),
             tab_model: segmented_button::ModelBuilder::default().build(),
@@ -3101,7 +3119,18 @@ impl Application for App {
 
         let mut commands = vec![app.update_config(), app.update(Message::CheckClipboard)];
 
-        for location in flags.locations {
+        #[allow(unused_mut)]
+        let mut locations = flags.locations;
+        // The folder a Dock click or `open -a` launched this process for arrives from AppKit
+        // before the app exists, and is opened like a command-line path, in place of the
+        // working directory the launch would otherwise show.
+        #[cfg(target_os = "macos")]
+        locations.extend(
+            crate::appkit_macos::take_launch_documents()
+                .into_iter()
+                .map(Location::Path),
+        );
+        for location in locations {
             if let Some(path) = location.path_opt()
                 && path.is_file()
                 && let Some(parent) = path.parent()
@@ -3132,6 +3161,16 @@ impl Application for App {
                 commands.push(app.open_tab(Location::Path(current_dir), true, None));
             } else {
                 commands.push(app.open_tab(Location::Path(home_dir()), true, None));
+            }
+            // AppKit may still be about to deliver the folder this process was launched for,
+            // in which case this placeholder gives way to it.
+            #[cfg(target_os = "macos")]
+            {
+                let entity = app.tab_model.active();
+                app.launch_tab = app
+                    .tab_model
+                    .data::<Tab>(entity)
+                    .map(|tab| (entity, tab.location.clone()));
             }
         }
 
@@ -5777,7 +5816,12 @@ impl Application for App {
             }
             Message::ToggleContextPage(context_page) => {
                 match context_page {
-                    ContextPage::Settings => self.load_icon_themes(),
+                    ContextPage::Settings => {
+                        self.load_icon_themes();
+                        // Another app, or `duti`, may have changed it since the last look.
+                        #[cfg(target_os = "macos")]
+                        self.folder_opener.refresh();
+                    }
                     ContextPage::IconThemes => {
                         self.icon_themes_return = if self.core.window.show_context
                             && self.context_page == ContextPage::FolderAppearance
@@ -5822,6 +5866,44 @@ impl Application for App {
             }
             Message::WindowClose => return self.close_main_window(false),
             Message::Quit => return self.close_main_window(true),
+            #[cfg(target_os = "macos")]
+            Message::FolderOpener(message) => {
+                use crate::folder_opener_macos::{self, open_targets};
+                return match message {
+                    // The tabs are the application's, so the paths are opened here.
+                    folder_opener_macos::Message::Opened(paths) => {
+                        let paths: Vec<PathBuf> = paths
+                            .into_iter()
+                            .map(|path| fs::canonicalize(&path).unwrap_or(path))
+                            .collect();
+                        // The placeholder tab from `init` makes way for the launch folder. Once
+                        // it has been navigated, or has company, it is the user's and stays.
+                        let placeholder = self.launch_tab.take().filter(|(entity, location)| {
+                            self.tab_model.len() == 1
+                                && self
+                                    .tab_model
+                                    .data::<Tab>(*entity)
+                                    .is_some_and(|tab| tab.location == *location)
+                        });
+                        let mut tasks: Vec<_> = open_targets(&paths, |path| path.is_dir())
+                            .into_iter()
+                            .map(|target| self.open_tab(target.location, true, target.selection))
+                            .collect();
+                        if let Some((entity, _)) = placeholder
+                            && !tasks.is_empty()
+                        {
+                            log::info!("replacing the launch tab with the opened folder");
+                            self.tab_model.remove(entity);
+                            tasks.push(self.update_watcher());
+                        }
+                        Task::batch(tasks)
+                    }
+                    message => self
+                        .folder_opener
+                        .update(message)
+                        .map(|message| cosmic::action::app(Message::FolderOpener(message))),
+                };
+            }
             Message::Hide => {
                 // Only macOS has an application to hide; the binding exists nowhere else.
                 #[cfg(target_os = "macos")]
@@ -8208,6 +8290,12 @@ impl Application for App {
         subscriptions.push(crate::appkit_macos::activation_subscription().map(|_| Message::Reopen));
         #[cfg(target_os = "macos")]
         subscriptions.push(crate::appkit_macos::quit_subscription().map(|_| Message::Quit));
+        #[cfg(target_os = "macos")]
+        subscriptions.push(
+            crate::appkit_macos::open_documents_subscription().map(|documents| {
+                Message::FolderOpener(crate::folder_opener_macos::Message::Opened(documents.0))
+            }),
+        );
 
         Subscription::batch(subscriptions)
     }
