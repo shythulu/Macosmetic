@@ -62,6 +62,7 @@ pub mod tab;
 pub mod tags;
 #[cfg(target_os = "macos")]
 pub(crate) mod tags_macos;
+mod theme_catalog;
 mod thumbnail_cacher;
 mod thumbnailer;
 pub(crate) mod trash;
