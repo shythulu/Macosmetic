@@ -20,6 +20,7 @@ pub mod channel;
 pub mod clipboard;
 pub mod config;
 mod context_action;
+mod copy_path;
 #[cfg(target_os = "macos")]
 mod copyfile_macos;
 pub mod dialog;

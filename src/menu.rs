@@ -14,6 +14,7 @@ use std::sync::LazyLock;
 
 use crate::app::{Action, Message};
 use crate::config::{Config, ContextActionPreset};
+use crate::copy_path::PathVariant;
 use crate::fl;
 use crate::folder_look::{self, FOLDER_COLOURS, FolderLook};
 use crate::key_bind::{menu_key_bind, menu_key_binds};
@@ -24,6 +25,24 @@ use crate::trash::{Trash, TrashExt};
 
 static MENU_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(|| cosmic::widget::Id::new("responsive-menu"));
+
+/// "Copy path as" submenu with one entry per [`PathVariant`].
+fn copy_path_as_folder() -> menu::Item<TabAction, String> {
+    let items = PathVariant::ALL
+        .into_iter()
+        .map(|variant| {
+            let label = match variant {
+                PathVariant::Posix => fl!("copy-path-posix"),
+                PathVariant::Tilde => fl!("copy-path-tilde"),
+                PathVariant::ShellQuoted => fl!("copy-path-shell-quoted"),
+                PathVariant::FileUrl => fl!("copy-path-file-url"),
+                PathVariant::Name => fl!("copy-path-name"),
+            };
+            menu::Item::Button(label, None, TabAction(Action::CopyPath(variant)))
+        })
+        .collect();
+    menu::Item::Folder(fl!("copy-path-as"), items)
+}
 
 const fn menu_button_optional(
     label: String,
@@ -240,10 +259,14 @@ pub fn context_menu<'a>(
                 children.push(menu_item(fl!("rename"), Action::Rename));
                 children.push(menu_item(fl!("cut"), Action::Cut));
                 if modifiers.shift() && !modifiers.control() {
-                    children.push(menu_item(fl!("copy-path"), Action::CopyPath));
+                    children.push(menu_item(
+                        fl!("copy-path"),
+                        Action::CopyPath(PathVariant::Posix),
+                    ));
                 } else {
                     children.push(menu_item(fl!("copy"), Action::Copy));
                 }
+                children.push(copy_path_as_folder());
                 // Should this simply bypass trash and remove the shortcut?
                 children.push(menu_item(fl!("move-to-trash"), Action::Delete));
                 let action_items = context_action_items(selected, selected_dir);
@@ -298,10 +321,14 @@ pub fn context_menu<'a>(
                     children.push(menu_item(fl!("cut"), Action::Cut));
                 }
                 if modifiers.shift() && !modifiers.control() {
-                    children.push(menu_item(fl!("copy-path"), Action::CopyPath));
+                    children.push(menu_item(
+                        fl!("copy-path"),
+                        Action::CopyPath(PathVariant::Posix),
+                    ));
                 } else {
                     children.push(menu_item(fl!("copy"), Action::Copy));
                 }
+                children.push(copy_path_as_folder());
                 if selected_mount_point == 0 {
                     children.push(menu_item(fl!("move-to"), Action::MoveTo));
                 }
