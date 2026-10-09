@@ -348,6 +348,14 @@ settings = Settings
 single-click = Single click to open
 show-recents = Recents folder in the sidebar
 
+### Opening folders (macOS)
+folder-opener = Opening folders
+use-for-folders = Use Macosmetic to open folders
+folders-open-in = Folders from the Dock, Spotlight and other apps open in {$app}.
+folder-opener-not-bundled = Only available when running from the app bundle. Finder keeps opening folders.
+folder-opener-unknown = No application is set to open folders.
+folder-opener-failed = The change was refused: {$error}
+
 ### Appearance
 appearance = Appearance
 theme = Theme

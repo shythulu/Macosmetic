@@ -23,6 +23,8 @@ mod context_action;
 pub mod dialog;
 mod folder_appearance;
 pub mod folder_look;
+#[cfg(target_os = "macos")]
+pub(crate) mod folder_opener_macos;
 mod gesture;
 #[cfg(target_os = "macos")]
 pub(crate) mod gesture_macos;
@@ -166,6 +168,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Closing the last window leaves the application in the Dock; this is how it hears
         // about the click that asks for a window back.
         appkit_macos::watch_activation();
+        // The folders the Dock, Spotlight and `open` hand this application, including the one
+        // this process may have been launched for.
+        appkit_macos::watch_open_documents();
     }
 
     #[cfg(target_os = "macos")]

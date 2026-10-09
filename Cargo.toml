@@ -115,10 +115,7 @@ jemalloc = ["dep:tikv-jemallocator"]
 notify = ["dep:notify-rust"]
 # macOS Quick Look previews. No effect on other platforms: every dependency it enables is
 # declared only for macOS, so the feature resolves to nothing elsewhere.
-quicklook = [
-    "dep:objc2-quick-look-thumbnailing",
-    "dep:objc2-uniform-type-identifiers",
-]
+quicklook = ["dep:objc2-quick-look-thumbnailing"]
 wayland = ["libcosmic/wayland", "dep:cctk", "dep:wayland-client"]
 wgpu = ["libcosmic/wgpu"]
 
@@ -144,12 +141,14 @@ block2 = "0.6"
 objc2 = "0.6"
 # Trackpad gestures come from an NSEvent monitor (see src/gesture_macos.rs); the window colour
 # space is set through NSView/NSWindow, and the application lifecycle goes through
-# NSApplication and NSNotificationCenter (see src/appkit_macos.rs).
+# NSApplication and NSNotificationCenter (see src/appkit_macos.rs). The default folder opener
+# is read and set through NSWorkspace with a UTType (see src/folder_opener_macos.rs).
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "bitflags",
     "block2",
     "objc2-core-foundation",
+    "objc2-uniform-type-identifiers",
     "NSApplication",
     "NSColorSpace",
     "NSEvent",
@@ -158,10 +157,18 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSResponder",
     "NSView",
     "NSWindow",
+    "NSWorkspace",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "block2",
+    # The `odoc` Apple Event folders arrive in when another object holds the application
+    # delegate (src/appkit_macos.rs).
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    "NSArray",
+    # The bundle this process runs from, for the default folder opener.
+    "NSBundle",
     "NSDictionary",
     "NSError",
     "NSGeometry",
@@ -183,11 +190,12 @@ objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, fea
     "QLThumbnailGenerationRequest",
     "QLThumbnailGenerator",
 ], optional = true }
+# UTTypePNG for Quick Look thumbnails and UTTypeFolder for the default folder opener.
 objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = [
     "std",
     "UTCoreTypes",
     "UTType",
-], optional = true }
+] }
 
 [build-dependencies]
 xdgen = "0.1"
