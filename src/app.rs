@@ -5475,6 +5475,27 @@ impl Application for App {
             Message::Undo(_id) => {
                 // TODO: undo
             }
+            // macOS has no readable Trash listing, so Undo looks the items up in the journal.
+            #[cfg(target_os = "macos")]
+            Message::UndoTrash(id, recently_trashed) => {
+                self.toasts.remove(id);
+                return cosmic::task::future(async move {
+                    let items = tokio::task::spawn_blocking(move || {
+                        crate::trash_macos::journal_path()
+                            .map(|journal| {
+                                crate::trash_macos::items_for_originals(&journal, &recently_trashed)
+                            })
+                            .unwrap_or_default()
+                    })
+                    .await
+                    .unwrap_or_else(|err| {
+                        log::warn!("failed to read the trash journal: {err}");
+                        Vec::new()
+                    });
+                    Message::UndoTrashStart(items)
+                });
+            }
+            #[cfg(not(target_os = "macos"))]
             Message::UndoTrash(id, recently_trashed) => {
                 self.toasts.remove(id);
 
