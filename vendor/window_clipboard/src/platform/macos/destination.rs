@@ -23,7 +23,7 @@ use objc2::{sel, MainThreadMarker};
 use objc2_app_kit::{
     NSDragOperation, NSDraggingInfo, NSEvent, NSPasteboard, NSPasteboardTypeFileURL, NSView,
 };
-use objc2_foundation::{NSArray, NSURL};
+use objc2_foundation::{NSArray, NSObjectProtocol, NSURL};
 use std::ffi::CStr;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -59,7 +59,17 @@ pub(crate) fn install(shared: &Arc<Shared>, mtm: MainThreadMarker, key: SurfaceK
     // SAFETY: reading an AppKit constant.
     let file_url = unsafe { NSPasteboardTypeFileURL };
     view.registerForDraggedTypes(&NSArray::from_slice(&[file_url]));
-    log::debug!(target: LOG, "view {key:#x} now accepts file drags from other apps");
+    let is_content_view = view
+        .window()
+        .and_then(|w| w.contentView())
+        .is_some_and(|cv| std::ptr::eq(&*cv as *const NSView, view as *const NSView));
+    log::debug!(
+        target: LOG,
+        "view {key:#x} now accepts file drags from other apps: class={:?} responds={} types={} content_view={is_content_view}",
+        view.class().name(),
+        view.respondsToSelector(sel!(draggingEntered:)),
+        view.registeredDraggedTypes().len(),
+    );
 }
 
 fn build_class(superclass: &AnyClass) -> &'static AnyClass {
@@ -175,6 +185,7 @@ unsafe extern "C-unwind" fn dragging_entered(
     _sel: Sel,
     info: &ProtocolObject<dyn NSDraggingInfo>,
 ) -> NSDragOperation {
+    log::trace!(target: LOG, "draggingEntered:");
     let Some(shared) = shared() else {
         return NSDragOperation::None;
     };
