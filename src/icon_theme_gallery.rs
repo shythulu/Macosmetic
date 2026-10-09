@@ -9,10 +9,11 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{self, icon};
+use cosmic::widget::{self, DndDestination, icon};
 use cosmic::{Element, theme};
 
 use crate::app::Message;
+use crate::clipboard::ClipboardPaste;
 use crate::fl;
 use crate::icon_theme_catalog::{self, CatalogTheme, InstallError, Marker, Step};
 use crate::icon_themes::IconThemeInfo;
@@ -83,6 +84,9 @@ pub struct Gallery {
     catalog_previews: Vec<Vec<icon::Handle>>,
     /// Installed themes whose catalog archive has moved on since they were installed.
     updatable: HashSet<String>,
+    /// Theme directories on disk that the settings list leaves out, such as hidden
+    /// dependencies; they still count as installed when sizing a download.
+    hidden_installed: HashSet<String>,
     pub installs: HashMap<String, InstallState>,
     /// Failed installs whose raw error text is shown.
     pub details: HashSet<String>,
@@ -114,6 +118,7 @@ impl Gallery {
             .filter(|theme| icon_theme_catalog::needs_update(theme))
             .map(|theme| theme.id.clone())
             .collect();
+        self.hidden_installed = icon_theme_catalog::installed_ids();
     }
 
     /// Whether an install is running, which keeps the other Install buttons disabled: one at
@@ -139,10 +144,38 @@ impl Gallery {
             space_m,
             ..
         } = theme::spacing();
-        let installed: HashSet<String> = themes.iter().map(|theme| theme.id.clone()).collect();
+        let mut installed: HashSet<String> = themes.iter().map(|theme| theme.id.clone()).collect();
+        installed.extend(self.hidden_installed.iter().cloned());
 
-        let mut children: Vec<Element<'a, Message>> =
-            vec![widget::text::heading(fl!("installed-icon-themes")).into()];
+        let mut children: Vec<Element<'a, Message>> = vec![
+            widget::row::with_children(vec![
+                widget::text::heading(fl!("installed-icon-themes")).into(),
+                widget::space::horizontal().into(),
+                widget::button::standard(fl!("install-from-file"))
+                    .on_press_maybe((!self.installing()).then_some(Message::IconThemeInstallFile))
+                    .into(),
+            ])
+            .align_y(Alignment::Center)
+            .into(),
+        ];
+        // Installs from local archives, which have no card of their own until they land.
+        let mut file_installs: Vec<(&String, &InstallState)> = self
+            .installs
+            .iter()
+            .filter(|(key, _)| key.starts_with("file:"))
+            .collect();
+        file_installs.sort_by_key(|(key, _)| *key);
+        for (key, state) in file_installs {
+            let name = key.strip_prefix("file:").unwrap_or(key);
+            let mut rows = vec![widget::text::heading(name).into()];
+            match state {
+                InstallState::Installing { step, .. } => {
+                    rows.push(widget::text::caption(step_text(*step)).into());
+                }
+                InstallState::Failed(error) => rows.extend(self.error_rows(key, error)),
+            }
+            children.push(card(rows, space_xs, space_s));
+        }
         for (index, info) in themes.iter().enumerate() {
             let is_active = info.id == active;
             let marker = self.markers.get(index).and_then(Option::as_ref);
@@ -214,7 +247,10 @@ impl Gallery {
                         .installed_date()
                         .map(|date| fl!("installed-on", date = date)),
                 },
-                None if !info.roots.is_empty() => Some(fl!("installed-outside-app")),
+                // The bundled theme is the app's own, whatever copies sit on disk.
+                None if !info.roots.is_empty() && info.id != cosmic::icon_theme::COSMIC => {
+                    Some(fl!("installed-outside-app"))
+                }
                 None => None,
             };
             details.extend(origin);
@@ -260,9 +296,14 @@ impl Gallery {
             }
         }
 
-        widget::column::with_children(children)
-            .spacing(space_xxs)
-            .into()
+        children.push(widget::space::vertical().height(space_m).into());
+        children.push(widget::text::caption(fl!("drop-theme-hint")).into());
+
+        let content = widget::column::with_children(children).spacing(space_xxs);
+        DndDestination::for_data::<ClipboardPaste>(content, |data, _action| {
+            Message::IconThemeInstallFiles(data.map(|data| data.paths).unwrap_or_default())
+        })
+        .into()
     }
 
     fn available_card<'a>(

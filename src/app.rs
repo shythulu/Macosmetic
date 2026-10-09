@@ -434,6 +434,11 @@ pub enum Message {
     IconThemeInstall(String),
     IconThemeInstallCancel(String),
     IconThemeInstallEvent(icon_theme_catalog::InstallEvent),
+    /// Pick local theme archives to install.
+    IconThemeInstallFile,
+    IconThemeInstallFileResult(DialogResult),
+    /// Install the themes in these local archives or folders.
+    IconThemeInstallFiles(Vec<PathBuf>),
     IconThemeRemove(String),
     IconThemeRemoved(String, Result<(), String>),
     /// Show or hide the raw error text of a failed install.
@@ -2481,10 +2486,9 @@ impl App {
     }
 
     fn installed_icon_theme_ids(&self) -> HashSet<String> {
-        self.icon_themes
-            .iter()
-            .map(|theme| theme.id.clone())
-            .collect()
+        let mut ids = icon_theme_catalog::installed_ids();
+        ids.extend(self.icon_themes.iter().map(|theme| theme.id.clone()));
+        ids
     }
 
     /// Runs `plan` on its own thread, feeding its progress back as messages. `replace` names
@@ -2584,6 +2588,41 @@ impl App {
             tabs.into_iter()
                 .map(|entity| self.update(Message::TabMessage(Some(entity), tab::Message::Reload))),
         )
+    }
+
+    /// Opens a file dialog to pick icon theme archives to install.
+    fn choose_icon_theme_files(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        if let Some(old_dialog) = self.file_dialog_opt.take() {
+            let old_id = old_dialog.window_id();
+            self.windows.remove(&old_id);
+            tasks.push(window::close(old_id));
+        }
+        let start = dirs::download_dir().unwrap_or_else(home_dir);
+        let (mut dialog, dialog_task) = Dialog::new(
+            DialogSettings::new()
+                .kind(DialogKind::OpenMultipleFiles)
+                .path(start),
+            Message::FileDialogMessage,
+            Message::IconThemeInstallFileResult,
+        );
+        let filter = DialogFilter {
+            label: fl!("icon-theme-archives"),
+            patterns: ["*.tar.gz", "*.tgz", "*.tar.xz", "*.tar.bz2", "*.tar", "*.zip"]
+                .iter()
+                .map(|glob| DialogFilterPattern::Glob(glob.to_string()))
+                .collect(),
+        };
+        tasks.push(dialog.set_filters(vec![filter], Some(0)));
+        tasks.push(dialog.set_title(fl!("install-theme-title")));
+        dialog.set_accept_label(fl!("install"));
+        self.windows.insert(
+            dialog.window_id(),
+            Window::new(WindowKind::FileDialog(None)),
+        );
+        self.file_dialog_opt = Some(dialog);
+        tasks.push(dialog_task);
+        Task::batch(tasks)
     }
 
     /// Opens a file dialog to pick an image for the folders on the appearance page.
@@ -3451,6 +3490,46 @@ impl Application for App {
             Message::IconThemeInstallCancel(id) => {
                 self.icon_theme_gallery.cancel(&id);
             }
+            Message::IconThemeInstallFile => {
+                return self.choose_icon_theme_files();
+            }
+            Message::IconThemeInstallFileResult(result) => {
+                if let Some(file_dialog) = self.file_dialog_opt.take() {
+                    self.windows.remove(&file_dialog.window_id());
+                }
+                if let DialogResult::Open(paths) = result {
+                    return self.update(Message::IconThemeInstallFiles(paths));
+                }
+            }
+            Message::IconThemeInstallFiles(paths) => {
+                let gallery = &mut self.icon_theme_gallery;
+                // A new attempt clears the last one's failure.
+                gallery.installs.retain(|key, state| {
+                    !key.starts_with("file:")
+                        || !matches!(state, icon_theme_gallery::InstallState::Failed(_))
+                });
+                let mut tasks = Vec::new();
+                for path in paths {
+                    let key = icon_theme_catalog::file_install_key(&path);
+                    gallery.installs.insert(
+                        key,
+                        icon_theme_gallery::InstallState::Installing {
+                            step: icon_theme_catalog::Step::Extracting,
+                            cancel: Arc::default(),
+                        },
+                    );
+                    let (tx, rx) = cosmic::iced::futures::channel::mpsc::unbounded();
+                    std::thread::spawn(move || {
+                        icon_theme_catalog::install_from_path(path, |event| {
+                            let _ = tx.unbounded_send(event);
+                        });
+                    });
+                    tasks.push(Task::run(rx, |event| {
+                        cosmic::action::app(Message::IconThemeInstallEvent(event))
+                    }));
+                }
+                return Task::batch(tasks);
+            }
             Message::IconThemeToggleDetails(id) => {
                 let details = &mut self.icon_theme_gallery.details;
                 if !details.remove(&id) {
@@ -3469,11 +3548,10 @@ impl Application for App {
                             *current = step;
                         }
                     }
-                    icon_theme_catalog::InstallEvent::Installed(id, _ids) => {
+                    icon_theme_catalog::InstallEvent::Installed(id, ids) => {
                         gallery.installs.remove(&id);
-                        let updated = self.icon_themes.iter().any(|theme| theme.id == id);
                         self.reload_icon_themes();
-                        if updated && id == self.icon_theme {
+                        if ids.contains(&self.icon_theme) {
                             // The active theme's files were swapped; redraw from the new ones.
                             return self.icon_theme_changed();
                         }

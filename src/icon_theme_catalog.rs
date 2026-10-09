@@ -120,6 +120,20 @@ pub fn user_icons_dir() -> PathBuf {
     crate::icon_themes::data_home(&crate::home_dir()).join("icons")
 }
 
+/// The ids of every theme directory in the user's icon directory, hidden ones included.
+/// Dependencies such as Adwaita are `Hidden=true`, so the settings list leaves them out,
+/// but they still count as installed when planning.
+pub fn installed_ids() -> HashSet<String> {
+    let Ok(entries) = fs::read_dir(user_icons_dir()) else {
+        return HashSet::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.path().join("index.theme").is_file())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect()
+}
+
 /// What installing `id` takes: the theme and every catalog theme it needs that is not in
 /// `installed`, dependencies first.
 pub fn install_plan(id: &str, installed: &HashSet<String>) -> Vec<&'static CatalogTheme> {
@@ -545,9 +559,7 @@ fn host_of(url: &str) -> &str {
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> Result<(), InstallError> {
-    let mut hasher = Sha256::new();
-    io::copy(&mut File::open(path)?, &mut hasher)?;
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = sha256_of(path)?;
     if actual == expected {
         Ok(())
     } else {
@@ -649,37 +661,62 @@ enum Placement {
     ThroughLink,
 }
 
-/// Unpack `targets` from the tar stream `reader` into `dest/<id>`.
+/// One entry of an archive or folder, as the extraction sees it.
+enum EntryKind {
+    Dir,
+    File,
+    Symlink(PathBuf),
+    /// Hard links, devices and the like, which have no place in an icon theme.
+    Other,
+}
+
+/// Unpacks entries into `dest/<id>` for each target, whatever they are read from.
 ///
 /// Symlinks are kept, since most themes are built on them, but only relative ones that stay
 /// inside the icon directory once the theme sits at `<icons>/<id>`; a variant may point into
 /// a sibling theme installed beside it. Nothing is written through a symlink.
-pub fn extract(
-    reader: impl Read,
-    targets: &[ExtractTarget],
-    dest: &Path,
-    limits: &Limits,
-) -> Result<ExtractStats, InstallError> {
-    let mut stats = ExtractStats::default();
-    let mut written: Vec<Written> = targets.iter().map(|_| Written::default()).collect();
-    let mut entries = 0;
-    let mut bytes = 0;
+struct Extractor<'a> {
+    targets: &'a [ExtractTarget],
+    dest: &'a Path,
+    limits: &'a Limits,
+    stats: ExtractStats,
+    written: Vec<Written>,
+    entries: usize,
+    bytes: u64,
+}
 
-    let mut archive = tar::Archive::new(reader);
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        entries += 1;
-        if entries > limits.max_entries {
-            return Err(InstallError::TooLarge(limits.max_bytes));
+impl<'a> Extractor<'a> {
+    fn new(targets: &'a [ExtractTarget], dest: &'a Path, limits: &'a Limits) -> Self {
+        Self {
+            targets,
+            dest,
+            limits,
+            stats: ExtractStats::default(),
+            written: targets.iter().map(|_| Written::default()).collect(),
+            entries: 0,
+            bytes: 0,
         }
-        let Some(path) = normal_path(&entry.path()?) else {
-            stats.rejected += 1;
-            continue;
+    }
+
+    fn entry(
+        &mut self,
+        path: &Path,
+        kind: EntryKind,
+        size: u64,
+        reader: &mut dyn Read,
+    ) -> Result<(), InstallError> {
+        self.entries += 1;
+        if self.entries > self.limits.max_entries {
+            return Err(InstallError::TooLarge(self.limits.max_bytes));
+        }
+        let Some(path) = normal_path(path) else {
+            self.stats.rejected += 1;
+            return Ok(());
         };
 
         // Where the entry goes: (target, path inside the theme).
         let mut placement = None;
-        for (index, target) in targets.iter().enumerate() {
+        for (index, target) in self.targets.iter().enumerate() {
             if target.index_theme.as_deref() == Some(path.as_str()) {
                 placement = Some((index, "index.theme".to_string()));
                 break;
@@ -696,63 +733,419 @@ pub fn extract(
             }
         }
         let Some((index, relative)) = placement else {
-            continue;
+            return Ok(());
         };
 
         let lower = relative.to_lowercase();
-        let out = dest.join(&targets[index].id).join(&relative);
-        let kind = entry.header().entry_type();
-        let placement = if kind.is_dir() {
-            written[index].dir(&lower)
+        let out = self.dest.join(&self.targets[index].id).join(&relative);
+        let placement = if matches!(kind, EntryKind::Dir) {
+            self.written[index].dir(&lower)
         } else {
-            written[index].file(&lower)
+            self.written[index].file(&lower)
         };
         match placement {
             Placement::Fresh => {}
             Placement::Collision => {
-                stats.case_collisions += 1;
-                continue;
+                self.stats.case_collisions += 1;
+                return Ok(());
             }
             Placement::ThroughLink => {
                 // Its directory is a symlink; writing it would land outside this theme.
-                stats.rejected += 1;
-                continue;
+                self.stats.rejected += 1;
+                return Ok(());
             }
         }
-        if kind.is_dir() {
-            fs::create_dir_all(&out)?;
-            continue;
-        }
-        if let Some(parent) = out.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if kind.is_file() {
-            bytes += entry.size();
-            if bytes > limits.max_bytes {
-                return Err(InstallError::TooLarge(limits.max_bytes));
+        match kind {
+            EntryKind::Dir => {
+                fs::create_dir_all(&out)?;
             }
-            let mut file = File::create(&out)?;
-            io::copy(&mut entry, &mut file)?;
-            stats.files += 1;
-        } else if kind.is_symlink() {
-            let Some(link) = entry.link_name()? else {
-                stats.rejected += 1;
-                continue;
-            };
-            let link = link.into_owned();
-            if !link_stays_inside(&targets[index].id, &relative, &link) {
-                stats.rejected += 1;
-                continue;
+            EntryKind::File => {
+                self.bytes += size;
+                if self.bytes > self.limits.max_bytes {
+                    return Err(InstallError::TooLarge(self.limits.max_bytes));
+                }
+                if let Some(parent) = out.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let mut file = File::create(&out)?;
+                io::copy(reader, &mut file)?;
+                self.stats.files += 1;
             }
-            symlink(&link, &out)?;
-            written[index].links.insert(lower);
-            stats.symlinks += 1;
+            EntryKind::Symlink(link) => {
+                if !link_stays_inside(&self.targets[index].id, &relative, &link) {
+                    self.stats.rejected += 1;
+                    return Ok(());
+                }
+                if let Some(parent) = out.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                symlink(&link, &out)?;
+                self.written[index].links.insert(lower);
+                self.stats.symlinks += 1;
+            }
+            EntryKind::Other => {
+                self.stats.rejected += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Feeds every entry of the tar stream `reader` to `f`.
+fn tar_entries(
+    reader: impl Read,
+    f: &mut dyn FnMut(&Path, EntryKind, u64, &mut dyn Read) -> Result<(), InstallError>,
+) -> Result<(), InstallError> {
+    let mut archive = tar::Archive::new(reader);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        let header = entry.header().entry_type();
+        let kind = if header.is_dir() {
+            EntryKind::Dir
+        } else if header.is_file() {
+            EntryKind::File
+        } else if header.is_symlink() {
+            match entry.link_name()? {
+                Some(link) => EntryKind::Symlink(link.into_owned()),
+                None => EntryKind::Other,
+            }
         } else {
-            // Hard links, devices and the like have no place in an icon theme.
-            stats.rejected += 1;
+            EntryKind::Other
+        };
+        let size = entry.size();
+        f(&path, kind, size, &mut entry)?;
+    }
+    Ok(())
+}
+
+/// Feeds every entry of the zip archive in `file` to `f`.
+fn zip_entries(
+    file: File,
+    f: &mut dyn FnMut(&Path, EntryKind, u64, &mut dyn Read) -> Result<(), InstallError>,
+) -> Result<(), InstallError> {
+    let mut archive = zip::ZipArchive::new(file).map_err(|err| InstallError::Io(err.to_string()))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|err| InstallError::Io(err.to_string()))?;
+        let path = PathBuf::from(entry.name());
+        let size = entry.size();
+        let kind = if entry.is_dir() {
+            EntryKind::Dir
+        } else if entry.is_symlink() {
+            let mut target = Vec::new();
+            entry.read_to_end(&mut target)?;
+            match String::from_utf8(target) {
+                Ok(target) => EntryKind::Symlink(PathBuf::from(target)),
+                Err(_) => EntryKind::Other,
+            }
+        } else {
+            EntryKind::File
+        };
+        f(&path, kind, size, &mut entry)?;
+    }
+    Ok(())
+}
+
+/// Feeds every entry under the folder `dir` to `f`, with the folder's own name as the top
+/// path component, the way a tarball of it would read. Symlinks are reported, not followed.
+fn dir_entries(
+    dir: &Path,
+    f: &mut dyn FnMut(&Path, EntryKind, u64, &mut dyn Read) -> Result<(), InstallError>,
+) -> Result<(), InstallError> {
+    fn walk(
+        dir: &Path,
+        at: &Path,
+        f: &mut dyn FnMut(&Path, EntryKind, u64, &mut dyn Read) -> Result<(), InstallError>,
+    ) -> Result<(), InstallError> {
+        let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<io::Result<_>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = at.join(entry.file_name());
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if metadata.is_symlink() {
+                let link = fs::read_link(entry.path())?;
+                f(&path, EntryKind::Symlink(link), 0, &mut io::empty())?;
+            } else if metadata.is_dir() {
+                f(&path, EntryKind::Dir, 0, &mut io::empty())?;
+                walk(&entry.path(), &path, f)?;
+            } else if metadata.is_file() {
+                let mut file = File::open(entry.path())?;
+                f(&path, EntryKind::File, metadata.len(), &mut file)?;
+            } else {
+                f(&path, EntryKind::Other, 0, &mut io::empty())?;
+            }
+        }
+        Ok(())
+    }
+    let name = dir.file_name().map(PathBuf::from).unwrap_or_default();
+    f(&name, EntryKind::Dir, 0, &mut io::empty())?;
+    walk(dir, &name, f)
+}
+
+/// Unpack `targets` from the tar stream `reader` into `dest/<id>`.
+pub fn extract(
+    reader: impl Read,
+    targets: &[ExtractTarget],
+    dest: &Path,
+    limits: &Limits,
+) -> Result<ExtractStats, InstallError> {
+    let mut extractor = Extractor::new(targets, dest, limits);
+    tar_entries(reader, &mut |path, kind, size, reader| {
+        extractor.entry(path, kind, size, reader)
+    })?;
+    Ok(extractor.stats)
+}
+
+/// A local archive or folder to install themes from, told apart by its first bytes rather
+/// than its name.
+#[derive(Debug)]
+pub enum Source {
+    Tar(PathBuf, Compression),
+    Zip(PathBuf),
+    Dir(PathBuf),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Compression {
+    None,
+    Gzip,
+    Xz,
+    Bzip2,
+}
+
+impl Source {
+    pub fn open(path: &Path) -> Result<Self, InstallError> {
+        if path.is_dir() {
+            return Ok(Self::Dir(path.to_path_buf()));
+        }
+        let mut head = [0u8; 262];
+        let read = File::open(path)?.read(&mut head)?;
+        let head = &head[..read];
+        if head.starts_with(&[0x1f, 0x8b]) {
+            Ok(Self::Tar(path.to_path_buf(), Compression::Gzip))
+        } else if head.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
+            Ok(Self::Tar(path.to_path_buf(), Compression::Xz))
+        } else if head.starts_with(b"BZh") {
+            Ok(Self::Tar(path.to_path_buf(), Compression::Bzip2))
+        } else if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") {
+            Ok(Self::Zip(path.to_path_buf()))
+        } else if head.len() >= 262 && &head[257..262] == b"ustar" {
+            Ok(Self::Tar(path.to_path_buf(), Compression::None))
+        } else {
+            Err(InstallError::Io(format!(
+                "{} is not a tar, tar.gz, tar.xz, tar.bz2 or zip archive",
+                path.display()
+            )))
         }
     }
-    Ok(stats)
+
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Tar(path, _) | Self::Zip(path) | Self::Dir(path) => path,
+        }
+    }
+
+    /// The file or folder name, as the gallery shows it.
+    pub fn name(&self) -> String {
+        self.path()
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    fn entries(
+        &self,
+        f: &mut dyn FnMut(&Path, EntryKind, u64, &mut dyn Read) -> Result<(), InstallError>,
+    ) -> Result<(), InstallError> {
+        match self {
+            Self::Tar(path, compression) => {
+                let file = File::open(path)?;
+                match compression {
+                    Compression::None => tar_entries(file, f),
+                    Compression::Gzip => tar_entries(flate2::read::GzDecoder::new(file), f),
+                    #[cfg(feature = "lzma-rust2")]
+                    Compression::Xz => tar_entries(lzma_rust2::XzReader::new(file, true), f),
+                    #[cfg(not(feature = "lzma-rust2"))]
+                    Compression::Xz => Err(InstallError::Io(
+                        "xz archives are not supported by this build".to_string(),
+                    )),
+                    #[cfg(feature = "bzip2")]
+                    Compression::Bzip2 => tar_entries(bzip2::read::BzDecoder::new(file), f),
+                    #[cfg(not(feature = "bzip2"))]
+                    Compression::Bzip2 => Err(InstallError::Io(
+                        "bzip2 archives are not supported by this build".to_string(),
+                    )),
+                }
+            }
+            Self::Zip(path) => zip_entries(File::open(path)?, f),
+            Self::Dir(path) => dir_entries(path, f),
+        }
+    }
+
+    /// Unpack `targets` into `dest/<id>`.
+    pub fn extract(
+        &self,
+        targets: &[ExtractTarget],
+        dest: &Path,
+        limits: &Limits,
+    ) -> Result<ExtractStats, InstallError> {
+        let mut extractor = Extractor::new(targets, dest, limits);
+        self.entries(&mut |path, kind, size, reader| extractor.entry(path, kind, size, reader))?;
+        Ok(extractor.stats)
+    }
+
+    /// The themes in this source: every directory at most two levels down holding an
+    /// `index.theme` and something else below it. The root counts as a directory, for an
+    /// archive of one theme; the second level covers a wrapper directory, as GitHub's
+    /// tarballs have. Only the shallowest level with a theme is taken, so a theme's own
+    /// subdirectories are never mistaken for more themes.
+    pub fn detect_themes(&self) -> Result<Vec<ExtractTarget>, InstallError> {
+        let mut with_index: Vec<String> = Vec::new();
+        let mut with_other: HashSet<String> = HashSet::new();
+        let mut count = 0;
+        self.entries(&mut |path, kind, _size, _reader| {
+            count += 1;
+            if count > Limits::default().max_entries {
+                return Err(InstallError::TooLarge(Limits::default().max_bytes));
+            }
+            let Some(path) = normal_path(path) else {
+                return Ok(());
+            };
+            let (dir, name) = path.rsplit_once('/').unwrap_or(("", path.as_str()));
+            if name == "index.theme" && matches!(kind, EntryKind::File) {
+                if dir.matches('/').count() < 2 {
+                    with_index.push(dir.to_string());
+                }
+            } else {
+                // Everything above the entry holds something other than an index.theme.
+                with_other.insert(dir.to_string());
+                with_other.extend(ancestors(dir).map(str::to_string));
+                with_other.insert(String::new());
+            }
+            Ok(())
+        })?;
+        with_index.retain(|dir| with_other.contains(dir));
+        with_index.sort();
+        with_index.dedup();
+        let Some(shallowest) = with_index.iter().map(|dir| dir.matches('/').count()).min() else {
+            return Ok(Vec::new());
+        };
+        let shallowest = if with_index.contains(&String::new()) { 0 } else { shallowest + 1 };
+        let own_name = self.name();
+        Ok(with_index
+            .into_iter()
+            .filter(|dir| {
+                let depth = if dir.is_empty() { 0 } else { dir.matches('/').count() + 1 };
+                depth == shallowest
+            })
+            .map(|dir| {
+                let name = dir.rsplit('/').next().filter(|name| !name.is_empty());
+                ExtractTarget {
+                    id: theme_id(name.unwrap_or(&own_name)),
+                    root: dir,
+                    index_theme: None,
+                }
+            })
+            .collect())
+    }
+}
+
+/// The theme id a downloaded archive or wrapper directory stands for: its name without the
+/// archive extension and without the `-master`, `-main` or `-<commit>` GitHub appends.
+fn theme_id(name: &str) -> String {
+    let mut id = name;
+    for extension in [".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".tar", ".zip"] {
+        if let Some(stem) = id.strip_suffix(extension) {
+            id = stem;
+            break;
+        }
+    }
+    if let Some((stem, suffix)) = id.rsplit_once('-') {
+        let is_commit = suffix.len() >= 7 && suffix.chars().all(|c| c.is_ascii_hexdigit());
+        if (is_commit || matches!(suffix, "master" | "main")) && !stem.is_empty() {
+            id = stem;
+        }
+    }
+    id.to_string()
+}
+
+/// The gallery's key for an install from `path`, which has no catalog id.
+pub fn file_install_key(path: &Path) -> String {
+    format!(
+        "file:{}",
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    )
+}
+
+/// Install every theme in the archive or folder at `path`, reporting through `emit` under
+/// [`file_install_key`]. Blocking: run it on its own thread.
+pub fn install_from_path(path: PathBuf, emit: impl Fn(InstallEvent)) {
+    let key = file_install_key(&path);
+    emit(InstallEvent::Progress(key.clone(), Step::Extracting));
+    match install_file_in(&user_icons_dir(), &path) {
+        Ok(ids) => emit(InstallEvent::Installed(key, ids)),
+        Err(err) => {
+            log::warn!("installing icon themes from {} failed: {err}", path.display());
+            emit(InstallEvent::Failed(key, err));
+        }
+    }
+}
+
+fn install_file_in(icons_dir: &Path, path: &Path) -> Result<Vec<String>, InstallError> {
+    let source = Source::open(path)?;
+    let targets = source.detect_themes()?;
+    if targets.is_empty() {
+        return Err(InstallError::NoTheme);
+    }
+    // Never overwrite a theme the user put there.
+    for target in &targets {
+        let dir = icons_dir.join(&target.id);
+        if dir.exists() && !is_catalog_install(&dir) {
+            return Err(InstallError::Exists(target.id.clone()));
+        }
+    }
+    fs::create_dir_all(icons_dir)?;
+    let staging = tempfile::Builder::new()
+        .prefix(STAGING_PREFIX)
+        .tempdir_in(icons_dir)?;
+    let stats = source.extract(&targets, staging.path(), &Limits::default())?;
+    log::info!("unpacked {}: {stats:?}", path.display());
+    if stats.rejected > 0 {
+        return Err(InstallError::UnsafeArchive(stats.rejected));
+    }
+    let sha256 = match &source {
+        Source::Dir(_) => String::new(),
+        _ => sha256_of(path)?,
+    };
+    let mut ids = Vec::new();
+    for target in &targets {
+        let staged = staging.path().join(&target.id);
+        if !staged.join("index.theme").is_file() {
+            return Err(InstallError::NoTheme);
+        }
+        write_marker(&staged, &Marker::new(&sha256, format!("file:{}", source.name())))?;
+        let installed = icons_dir.join(&target.id);
+        if installed.exists() {
+            let removing = retire(&installed)?;
+            fs::rename(&staged, &installed)?;
+            fs::remove_dir_all(&removing)?;
+        } else {
+            fs::rename(&staged, &installed)?;
+        }
+        log::info!("installed icon theme {} from {}", target.id, path.display());
+        ids.push(target.id.clone());
+    }
+    Ok(ids)
+}
+
+fn sha256_of(path: &Path) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    io::copy(&mut File::open(path)?, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// `path` as `/`-joined normal components, or `None` if it is absolute or climbs with `..`.
@@ -1205,6 +1598,211 @@ mod tests {
             io::ErrorKind::PermissionDenied
         );
         assert!(theirs.is_dir());
+    }
+
+    /// A tarball of two themes under a GitHub-style wrapper directory.
+    fn sweet_tar() -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        add_dir(&mut builder, "Sweet-folders-40a5d36/");
+        add_file(&mut builder, "Sweet-folders-40a5d36/README.md", b"readme");
+        for theme in ["Sweet-Blue", "Sweet-Teal"] {
+            add_dir(&mut builder, &format!("Sweet-folders-40a5d36/{theme}/"));
+            add_file(
+                &mut builder,
+                &format!("Sweet-folders-40a5d36/{theme}/index.theme"),
+                format!("[Icon Theme]\nName={theme}\nDirectories=places\n\n[places]\nSize=48\n")
+                    .as_bytes(),
+            );
+            add_file(
+                &mut builder,
+                &format!("Sweet-folders-40a5d36/{theme}/places/folder.svg"),
+                b"<svg/>",
+            );
+            add_link(
+                &mut builder,
+                &format!("Sweet-folders-40a5d36/{theme}/places/inode-directory.svg"),
+                "folder.svg",
+            );
+        }
+        builder.into_inner().unwrap()
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn install_marker(icons: &Path, id: &str) -> Marker {
+        read_marker(&icons.join(id)).unwrap()
+    }
+
+    #[test]
+    fn detect_themes_finds_the_shallowest_index_theme_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("Sweet-folders-master.tar.gz");
+        fs::write(&archive, gzip(&sweet_tar())).unwrap();
+        let source = Source::open(&archive).unwrap();
+        assert!(matches!(source, Source::Tar(_, Compression::Gzip)));
+        let ids: Vec<(String, String)> = source
+            .detect_themes()
+            .unwrap()
+            .into_iter()
+            .map(|target| (target.root, target.id))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                ("Sweet-folders-40a5d36/Sweet-Blue".to_string(), "Sweet-Blue".to_string()),
+                ("Sweet-folders-40a5d36/Sweet-Teal".to_string(), "Sweet-Teal".to_string()),
+            ]
+        );
+
+        // One theme at the root of a wrapper directory: the wrapper is the theme.
+        let mut builder = tar::Builder::new(Vec::new());
+        add_file(&mut builder, "candy-icons-83512fbcadc/index.theme", b"[Icon Theme]\n");
+        add_file(&mut builder, "candy-icons-83512fbcadc/places/folder.svg", b"<svg/>");
+        let plain = dir.path().join("candy.tar");
+        fs::write(&plain, builder.into_inner().unwrap()).unwrap();
+        let source = Source::open(&plain).unwrap();
+        assert!(matches!(source, Source::Tar(_, Compression::None)));
+        let targets = source.detect_themes().unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].root, "candy-icons-83512fbcadc");
+        assert_eq!(targets[0].id, "candy-icons");
+
+        // Nothing but an index.theme is not a theme.
+        let mut builder = tar::Builder::new(Vec::new());
+        add_file(&mut builder, "index.theme", b"[Icon Theme]\n");
+        let empty = dir.path().join("empty.tar");
+        fs::write(&empty, builder.into_inner().unwrap()).unwrap();
+        assert!(Source::open(&empty).unwrap().detect_themes().unwrap().is_empty());
+
+        assert_eq!(theme_id("MoreWaita-main.zip"), "MoreWaita");
+        assert_eq!(theme_id("Papirus-Dark"), "Papirus-Dark");
+        assert_eq!(theme_id("Tela-circle-dark"), "Tela-circle-dark");
+    }
+
+    #[test]
+    fn install_from_a_tarball_a_zip_and_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let icons = tempfile::tempdir().unwrap();
+
+        let tarball = dir.path().join("Sweet-folders.tar.gz");
+        fs::write(&tarball, gzip(&sweet_tar())).unwrap();
+        assert_eq!(
+            install_file_in(icons.path(), &tarball).unwrap(),
+            ["Sweet-Blue", "Sweet-Teal"]
+        );
+        assert!(icons.path().join("Sweet-Blue/places/folder.svg").is_file());
+        assert_eq!(
+            fs::read_link(icons.path().join("Sweet-Teal/places/inode-directory.svg")).unwrap(),
+            Path::new("folder.svg")
+        );
+        let marker = install_marker(icons.path(), "Sweet-Blue");
+        assert_eq!(marker.file(), Some("Sweet-folders.tar.gz"));
+        assert_eq!(marker.sha256, sha256_of(&tarball).unwrap());
+
+        // The same themes as a zip replace the copies the app installed.
+        let zipped = dir.path().join("Sweet-folders.zip");
+        {
+            use std::io::Write;
+            let mut writer = zip::ZipWriter::new(File::create(&zipped).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            writer.add_directory("Sweet-Blue/", options).unwrap();
+            writer.start_file("Sweet-Blue/index.theme", options).unwrap();
+            writer.write_all(b"[Icon Theme]\nName=Sweet-Blue\n").unwrap();
+            writer.start_file("Sweet-Blue/places/folder.svg", options).unwrap();
+            writer.write_all(b"<svg>zip</svg>").unwrap();
+            writer
+                .add_symlink("Sweet-Blue/places/inode-directory.svg", "folder.svg", options)
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        assert_eq!(install_file_in(icons.path(), &zipped).unwrap(), ["Sweet-Blue"]);
+        assert_eq!(
+            fs::read(icons.path().join("Sweet-Blue/places/folder.svg")).unwrap(),
+            b"<svg>zip</svg>"
+        );
+        assert_eq!(
+            fs::read_link(icons.path().join("Sweet-Blue/places/inode-directory.svg")).unwrap(),
+            Path::new("folder.svg")
+        );
+        assert_eq!(
+            install_marker(icons.path(), "Sweet-Blue").file(),
+            Some("Sweet-folders.zip")
+        );
+        assert!(icons.path().join("Sweet-Teal/places/folder.svg").is_file());
+        assert_eq!(fs::read_dir(icons.path()).unwrap().count(), 2);
+
+        // An unpacked folder, dropped as is.
+        let folder = dir.path().join("Sweet-Purple");
+        fs::create_dir_all(folder.join("places")).unwrap();
+        fs::write(folder.join("index.theme"), "[Icon Theme]\nName=Sweet-Purple\n").unwrap();
+        fs::write(folder.join("places/folder.svg"), "<svg/>").unwrap();
+        symlink(Path::new("folder.svg"), &folder.join("places/inode-directory.svg")).unwrap();
+        assert_eq!(install_file_in(icons.path(), &folder).unwrap(), ["Sweet-Purple"]);
+        assert!(icons.path().join("Sweet-Purple/places/folder.svg").is_file());
+        assert_eq!(
+            fs::read_link(icons.path().join("Sweet-Purple/places/inode-directory.svg")).unwrap(),
+            Path::new("folder.svg")
+        );
+        let marker = install_marker(icons.path(), "Sweet-Purple");
+        assert_eq!(marker.file(), Some("Sweet-Purple"));
+        assert_eq!(marker.sha256, "");
+
+        // A theme the user put there by hand is never replaced.
+        let theirs = icons.path().join("Sweet-Teal");
+        fs::remove_file(theirs.join(MARKER)).unwrap();
+        assert_eq!(
+            install_file_in(icons.path(), &tarball).unwrap_err(),
+            InstallError::Exists("Sweet-Teal".to_string())
+        );
+        assert_eq!(fs::read_dir(icons.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn install_from_file_refuses_unsafe_and_themeless_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let icons = tempfile::tempdir().unwrap();
+
+        let zipped = dir.path().join("evil.zip");
+        {
+            use std::io::Write;
+            let mut writer = zip::ZipWriter::new(File::create(&zipped).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            writer.start_file("Evil/index.theme", options).unwrap();
+            writer.write_all(b"[Icon Theme]\n").unwrap();
+            writer.start_file("Evil/../../escaped.svg", options).unwrap();
+            writer.write_all(b"<svg/>").unwrap();
+            writer.add_symlink("Evil/etc", "/etc", options).unwrap();
+            writer.finish().unwrap();
+        }
+        assert_eq!(
+            install_file_in(icons.path(), &zipped).unwrap_err(),
+            InstallError::UnsafeArchive(2)
+        );
+        assert!(!icons.path().join("Evil").exists());
+        assert!(!dir.path().join("escaped.svg").exists());
+        assert_eq!(fs::read_dir(icons.path()).unwrap().count(), 0);
+
+        let mut builder = tar::Builder::new(Vec::new());
+        add_file(&mut builder, "notes/README.md", b"no theme here");
+        let themeless = dir.path().join("notes.tar.gz");
+        fs::write(&themeless, gzip(&builder.into_inner().unwrap())).unwrap();
+        assert_eq!(
+            install_file_in(icons.path(), &themeless).unwrap_err(),
+            InstallError::NoTheme
+        );
+
+        let text = dir.path().join("notes.txt");
+        fs::write(&text, "hello").unwrap();
+        assert!(matches!(
+            install_file_in(icons.path(), &text).unwrap_err(),
+            InstallError::Io(_)
+        ));
     }
 
     #[test]
