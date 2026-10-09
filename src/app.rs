@@ -1475,38 +1475,54 @@ impl App {
         use crate::undo::{Message as HistoryMessage, Plan};
         let redo = matches!(message, HistoryMessage::Redo);
         let result = match message {
+            HistoryMessage::Undo | HistoryMessage::Redo if self.editing_text() => {
+                return Task::none();
+            }
             HistoryMessage::Undo => self.history.undo(&crate::undo::Disk),
             HistoryMessage::Redo => self.history.redo(&crate::undo::Disk),
-            HistoryMessage::Restore(items) => {
+            HistoryMessage::Restore(replay, items) => {
                 if items.is_empty() {
-                    return self.toast(fl!(
-                        "undo-nothing-in-trash",
-                        action = crate::undo::Kind::Trash.name()
-                    ));
+                    self.history.abandon(replay);
+                    return self.toast(replay.refused_text(fl!("undo-refused-not-in-trash")));
                 }
-                return self.replay_operation(Operation::Restore { items });
+                return self.replay_operation(replay, Operation::Restore { items });
             }
         };
         match result {
             None => Task::none(),
-            Some(Ok((_kind, Plan::Operations(ops)))) => Task::batch(
+            Some(Ok((replay, Plan::Operations(ops)))) => Task::batch(
                 ops.into_iter()
-                    .map(|op| self.replay_operation(op))
+                    .map(|op| self.replay_operation(replay, op))
                     .collect::<Vec<_>>(),
             ),
-            Some(Ok((_kind, Plan::Restore(paths)))) => {
+            Some(Ok((replay, Plan::Restore(paths)))) => {
                 let found = self.find_in_trash(paths.into());
                 cosmic::task::future(async move {
-                    Message::History(HistoryMessage::Restore(found.await))
+                    Message::History(HistoryMessage::Restore(replay, found.await))
                 })
             }
             Some(Err((kind, refusal))) => self.toast(refusal.message(kind, redo)),
         }
     }
 
+    /// Whether a text field may have the keyboard: a dialog is open or the location is being
+    /// edited. A focused text input already captures Cmd+Z before it reaches the key binds; this
+    /// also covers the moments when it is shown but its focus task has not run yet.
+    fn editing_text(&self) -> bool {
+        self.dialog_pages.front().is_some()
+            || self
+                .tab_model
+                .active_data::<Tab>()
+                .is_some_and(|tab| tab.edit_location.is_some())
+    }
+
     /// Run an operation for undo or redo, so it is not recorded as a new step.
-    fn replay_operation(&mut self, operation: Operation) -> Task<Message> {
-        self.history.replaying(self.pending_operation_id);
+    fn replay_operation(
+        &mut self,
+        replay: crate::undo::Replay,
+        operation: Operation,
+    ) -> Task<Message> {
+        self.history.replaying(self.pending_operation_id, replay);
         self.operation(operation)
     }
 
@@ -1632,10 +1648,15 @@ impl App {
         let mut tasks = Vec::new();
         let mut failed = Vec::new();
         for (id, err) in errors.into_iter() {
-            self.history.failed(id);
+            let replay = self.history.failed(id);
             if let Some((op, controller)) = self.pending_operations.remove(&id) {
-                // Only show dialog if not cancelled
-                if !controller.is_cancelled() {
+                // An undo or redo that fails reports in a toast, like one refused up front.
+                if let Some(replay) = replay
+                    && !controller.is_cancelled()
+                {
+                    tasks.push(self.toast(replay.refused_text(err.to_string())));
+                } else if !controller.is_cancelled() {
+                    // Only show dialog if not cancelled
                     match err.kind {
                         OperationErrorType::Generic(_) => failed.push(id),
                         OperationErrorType::PasswordRequired => {

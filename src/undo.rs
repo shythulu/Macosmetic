@@ -8,7 +8,7 @@
 //! Nothing here touches the disk except through a [`Probe`], so the logic is tested with a fake.
 //! The app runs the planned operations through its normal operation queue.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::fl;
@@ -23,7 +23,7 @@ pub enum Message {
     Undo,
     Redo,
     /// Trash items found for a restore plan; empty if none were found.
-    Restore(Vec<trash::TrashItem>),
+    Restore(Replay, Vec<trash::TrashItem>),
 }
 
 /// The user-facing kind of a step, used for the "Undo <kind>" label.
@@ -154,9 +154,25 @@ pub enum Refusal {
     NoFolder(PathBuf),
 }
 
+/// The toast text for an undo or redo of `kind` that could not be done.
+pub fn refused_text(kind: Kind, redo: bool, reason: String) -> String {
+    let action = kind.name();
+    if redo {
+        fl!("redo-refused", action = action, reason = reason)
+    } else {
+        fl!("undo-refused", action = action, reason = reason)
+    }
+}
+
+impl Replay {
+    /// The toast text for this undo or redo failing for `reason`.
+    pub fn refused_text(&self, reason: String) -> String {
+        refused_text(self.kind, self.redo, reason)
+    }
+}
+
 impl Refusal {
     pub fn message(&self, kind: Kind, redo: bool) -> String {
-        let action = kind.name();
         let reason = match self {
             Self::Missing(path) => fl!("undo-refused-missing", path = path.display().to_string()),
             Self::Occupied(path) => {
@@ -166,11 +182,7 @@ impl Refusal {
                 fl!("undo-refused-no-folder", path = path.display().to_string())
             }
         };
-        if redo {
-            fl!("redo-refused", action = action, reason = reason)
-        } else {
-            fl!("undo-refused", action = action, reason = reason)
-        }
+        refused_text(kind, redo, reason)
     }
 }
 
@@ -191,18 +203,24 @@ impl Probe for Disk {
     }
 
     fn same_entry(&self, a: &Path, b: &Path) -> bool {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            match (a.symlink_metadata(), b.symlink_metadata()) {
-                (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
-                _ => false,
-            }
+        same_entry(a, b)
+    }
+}
+
+/// Whether `a` and `b` name the same directory entry on disk, as `a` and `A` do on a
+/// case-insensitive volume.
+pub fn same_entry(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (a.symlink_metadata(), b.symlink_metadata()) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
         }
-        #[cfg(not(unix))]
-        {
-            a == b
-        }
+    }
+    #[cfg(not(unix))]
+    {
+        a == b
     }
 }
 
@@ -275,15 +293,34 @@ pub fn destinations_occupied(op: &Operation, probe: &impl Probe) -> bool {
     })
 }
 
+/// An undo or redo that has been planned and is running.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Replay {
+    id: u64,
+    pub kind: Kind,
+    pub redo: bool,
+}
+
+#[derive(Debug)]
+struct InFlight {
+    /// The step to file once every operation of the plan has succeeded.
+    step: Step,
+    running: usize,
+    failed: bool,
+}
+
 /// The bounded undo and redo history.
 #[derive(Debug, Default)]
 pub struct History {
     undo: VecDeque<Step>,
     redo: Vec<Step>,
-    /// Operations started by undo or redo, which must not be recorded as new steps.
-    replaying: HashSet<u64>,
     /// Operations whose destinations were occupied when they started.
     conflicted: HashSet<u64>,
+    /// Operations started by undo or redo, by operation id. They are not recorded as new steps.
+    replaying: HashMap<u64, Replay>,
+    /// Undos and redos still running, by replay id.
+    in_flight: HashMap<u64, InFlight>,
+    next_replay: u64,
 }
 
 impl History {
@@ -294,15 +331,19 @@ impl History {
         }
     }
 
-    /// Note that an operation was started by undo or redo.
-    pub fn replaying(&mut self, id: u64) {
-        self.replaying.insert(id);
+    /// Note that operation `id` runs part of `replay`.
+    pub fn replaying(&mut self, id: u64, replay: Replay) {
+        if let Some(in_flight) = self.in_flight.get_mut(&replay.id) {
+            in_flight.running += 1;
+            self.replaying.insert(id, replay);
+        }
     }
 
     /// Record a completed operation.
     pub fn completed(&mut self, id: u64, op: &Operation, selection: &OperationSelection) {
         let conflicted = self.conflicted.remove(&id);
-        if self.replaying.remove(&id) {
+        if let Some(replay) = self.replaying.remove(&id) {
+            self.finish(replay, true);
             return;
         }
         if let Some(step) = Step::from_operation(op, selection, conflicted) {
@@ -310,15 +351,49 @@ impl History {
         }
     }
 
-    /// Forget a failed or cancelled operation.
-    pub fn failed(&mut self, id: u64) {
+    /// Forget a failed or cancelled operation. Returns the undo or redo it was part of, if any;
+    /// that undo or redo is then not filed in the other history.
+    pub fn failed(&mut self, id: u64) -> Option<Replay> {
         self.conflicted.remove(&id);
-        self.replaying.remove(&id);
+        let replay = self.replaying.remove(&id)?;
+        self.finish(replay, false);
+        Some(replay)
+    }
+
+    /// Drop an undo or redo that ended up running nothing.
+    pub fn abandon(&mut self, replay: Replay) {
+        self.in_flight.remove(&replay.id);
+    }
+
+    fn finish(&mut self, replay: Replay, ok: bool) {
+        let Some(in_flight) = self.in_flight.get_mut(&replay.id) else {
+            return;
+        };
+        in_flight.running = in_flight.running.saturating_sub(1);
+        in_flight.failed |= !ok;
+        if in_flight.running > 0 {
+            return;
+        }
+        let Some(in_flight) = self.in_flight.remove(&replay.id) else {
+            return;
+        };
+        if in_flight.failed {
+            return;
+        }
+        if replay.redo {
+            self.push_undo(in_flight.step);
+        } else {
+            self.redo.push(in_flight.step);
+        }
     }
 
     /// Add a new step. This clears the redo history.
     pub fn push(&mut self, step: Step) {
         self.redo.clear();
+        self.push_undo(step);
+    }
+
+    fn push_undo(&mut self, step: Step) {
         self.undo.push_back(step);
         while self.undo.len() > HISTORY_LIMIT {
             self.undo.pop_front();
@@ -346,42 +421,53 @@ impl History {
 
     /// Take the most recent step and plan its undo.
     ///
-    /// On success the step moves to the redo history. A refused step is dropped, so the next undo
-    /// reaches the step before it.
-    pub fn undo(&mut self, probe: &impl Probe) -> Option<Result<(Kind, Plan), (Kind, Refusal)>> {
+    /// The step reaches the redo history once every operation of the plan has completed. A
+    /// refused step is dropped, so the next undo reaches the step before it.
+    pub fn undo(&mut self, probe: &impl Probe) -> Option<Result<(Replay, Plan), (Kind, Refusal)>> {
         let step = self.undo.pop_back()?;
-        Some(match step.change.undo_plan(probe) {
-            Ok(plan) => {
-                self.redo.push(Step {
-                    kind: step.kind,
-                    change: step.change.reversed(),
-                });
-                Ok((step.kind, plan))
-            }
-            Err(refusal) => Err((step.kind, refusal)),
-        })
+        Some(self.plan(step, false, probe))
     }
 
     /// Take the most recently undone step and plan running it again.
-    pub fn redo(&mut self, probe: &impl Probe) -> Option<Result<(Kind, Plan), (Kind, Refusal)>> {
+    pub fn redo(&mut self, probe: &impl Probe) -> Option<Result<(Replay, Plan), (Kind, Refusal)>> {
         let step = self.redo.pop()?;
-        Some(match step.change.undo_plan(probe) {
-            Ok(plan) => {
-                self.undo.push_back(Step {
+        Some(self.plan(step, true, probe))
+    }
+
+    fn plan(
+        &mut self,
+        step: Step,
+        redo: bool,
+        probe: &impl Probe,
+    ) -> Result<(Replay, Plan), (Kind, Refusal)> {
+        let plan = step
+            .change
+            .undo_plan(probe)
+            .map_err(|refusal| (step.kind, refusal))?;
+        let replay = Replay {
+            id: self.next_replay,
+            kind: step.kind,
+            redo,
+        };
+        self.next_replay += 1;
+        self.in_flight.insert(
+            replay.id,
+            InFlight {
+                step: Step {
                     kind: step.kind,
                     change: step.change.reversed(),
-                });
-                Ok((step.kind, plan))
-            }
-            Err(refusal) => Err((step.kind, refusal)),
-        })
+                },
+                running: 0,
+                failed: false,
+            },
+        );
+        Ok((replay, plan))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     /// A fake disk: a set of paths, with optional aliases for case-insensitive names.
     #[derive(Default)]
@@ -639,28 +725,34 @@ mod tests {
         );
         assert_eq!(history.next_undo(), Some(Kind::Rename));
 
-        let (_, plan) = history.undo(&Fake::with(&["/d", "/d/b"])).unwrap().unwrap();
-        assert_eq!(
-            plan,
-            Plan::Operations(vec![Operation::Rename {
-                from: p("/d/b"),
-                to: p("/d/a"),
-            }])
-        );
+        let (replay, plan) = history.undo(&Fake::with(&["/d", "/d/b"])).unwrap().unwrap();
+        let undo_op = Operation::Rename {
+            from: p("/d/b"),
+            to: p("/d/a"),
+        };
+        assert_eq!(plan, Plan::Operations(vec![undo_op.clone()]));
         assert_eq!(history.next_undo(), None);
+        // Redo becomes available only once the undo has completed.
+        assert_eq!(history.next_redo(), None);
+        history.replaying(2, replay);
+        history.completed(2, &undo_op, &sel(&["/d/a"]));
+        assert_eq!(history.next_undo(), None, "a replay is not a new step");
         assert_eq!(history.next_redo(), Some(Kind::Rename));
 
-        let (_, plan) = history.redo(&Fake::with(&["/d", "/d/a"])).unwrap().unwrap();
-        assert_eq!(
-            plan,
-            Plan::Operations(vec![Operation::Rename {
-                from: p("/d/a"),
-                to: p("/d/b"),
-            }])
-        );
+        let (replay, plan) = history.redo(&Fake::with(&["/d", "/d/a"])).unwrap().unwrap();
+        let redo_op = Operation::Rename {
+            from: p("/d/a"),
+            to: p("/d/b"),
+        };
+        assert_eq!(plan, Plan::Operations(vec![redo_op.clone()]));
+        history.replaying(3, replay);
+        history.completed(3, &redo_op, &sel(&["/d/b"]));
         assert_eq!(history.next_undo(), Some(Kind::Rename));
 
-        history.undo(&Fake::with(&["/d", "/d/b"]));
+        let (replay, _) = history.undo(&Fake::with(&["/d", "/d/b"])).unwrap().unwrap();
+        history.replaying(4, replay);
+        history.completed(4, &undo_op, &sel(&["/d/a"]));
+        assert_eq!(history.next_redo(), Some(Kind::Rename));
         history.push(Step {
             kind: Kind::NewFile,
             change: Change::Created(vec![p("/d/n")]),
@@ -669,16 +761,49 @@ mod tests {
     }
 
     #[test]
-    fn replayed_and_failed_operations_are_not_recorded() {
+    fn failed_operations_are_not_recorded() {
         let mut history = History::default();
         let op = Operation::NewFolder { path: p("/d/n") };
-        history.replaying(7);
-        history.completed(7, &op, &sel(&["/d/n"]));
-        assert_eq!(history.len(), 0);
         history.started(8, &op, &Fake::default());
-        history.failed(8);
+        assert_eq!(history.failed(8), None);
         assert_eq!(history.len(), 0);
         assert!(history.replaying.is_empty() && history.conflicted.is_empty());
+    }
+
+    #[test]
+    fn a_failed_undo_is_not_filed_for_redo() {
+        let mut history = History::default();
+        history.push(Step {
+            kind: Kind::Move,
+            change: Change::Moved(vec![(p("/x/a"), p("/t/a")), (p("/y/b"), p("/t/b"))]),
+        });
+        let probe = Fake::with(&["/x", "/y", "/t/a", "/t/b"]);
+        let (replay, Plan::Operations(ops)) = history.undo(&probe).unwrap().unwrap() else {
+            panic!("move undo should be operations");
+        };
+        assert_eq!(ops.len(), 2);
+        history.replaying(1, replay);
+        history.replaying(2, replay);
+        history.completed(1, &ops[0], &sel(&[]));
+        assert_eq!(history.next_redo(), None, "waits for every operation");
+        assert_eq!(history.failed(2), Some(replay));
+        assert_eq!(history.next_redo(), None);
+        assert_eq!(history.next_undo(), None);
+        assert!(history.in_flight.is_empty() && history.replaying.is_empty());
+    }
+
+    #[test]
+    fn an_abandoned_restore_is_dropped() {
+        let mut history = History::default();
+        history.push(Step {
+            kind: Kind::Trash,
+            change: Change::Trashed(vec![p("/d/a")]),
+        });
+        let (replay, plan) = history.undo(&Fake::with(&["/d"])).unwrap().unwrap();
+        assert_eq!(plan, Plan::Restore(vec![p("/d/a")]));
+        history.abandon(replay);
+        assert!(history.in_flight.is_empty());
+        assert_eq!(history.next_redo(), None);
     }
 
     #[test]
@@ -728,7 +853,7 @@ mod tests {
         let probe = Fake::with(&["/old"]);
         assert!(matches!(history.undo(&probe), Some(Err(_))));
         assert!(matches!(history.undo(&probe), Some(Ok(_))));
-        assert_eq!(history.next_redo(), Some(Kind::NewFile));
+        assert_eq!(history.next_undo(), None);
     }
 
     /// Rename a real file, then run the planned inverse through the operation code.
@@ -755,13 +880,18 @@ mod tests {
         history.completed(1, &op, &selection);
         assert!(to.exists() && !from.exists());
 
-        let Some(Ok((Kind::Rename, Plan::Operations(ops)))) = history.undo(&Disk) else {
+        let Some(Ok((replay, Plan::Operations(ops)))) = history.undo(&Disk) else {
             panic!("rename should be undoable");
         };
-        for op in ops {
-            op.perform(&tx, crate::operation::Controller::default())
+        assert_eq!(replay.kind, Kind::Rename);
+        for (id, op) in (2..).zip(ops) {
+            history.replaying(id, replay);
+            let selection = op
+                .clone()
+                .perform(&tx, crate::operation::Controller::default())
                 .await
                 .unwrap();
+            history.completed(id, &op, &selection);
         }
         assert!(from.exists() && !to.exists());
         assert_eq!(std::fs::read(&from).unwrap(), b"hello");
@@ -773,5 +903,19 @@ mod tests {
             Some(Err((Kind::Rename, Refusal::Occupied(to.clone()))))
         );
         assert_eq!(std::fs::read(&to).unwrap(), b"newer");
+
+        // If the target appears after the check, the rename itself still refuses.
+        let racing = Operation::Rename {
+            from: from.clone(),
+            to: to.clone(),
+        };
+        assert!(
+            racing
+                .perform(&tx, crate::operation::Controller::default())
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&to).unwrap(), b"newer");
+        assert_eq!(std::fs::read(&from).unwrap(), b"hello");
     }
 }

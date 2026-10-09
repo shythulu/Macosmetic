@@ -30,7 +30,7 @@ redo-refused = Can't redo {$action}: {$reason}
 undo-refused-missing = {$path} is no longer there.
 undo-refused-occupied = {$path} already exists.
 undo-refused-no-folder = the folder {$path} no longer exists.
-undo-nothing-in-trash = Can't undo {$action}: the items are not in the trash.
+undo-refused-not-in-trash = the items are not in the trash.
 today = Today
 
 # Desktop view options
