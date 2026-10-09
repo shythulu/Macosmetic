@@ -80,7 +80,7 @@ fn folder_colour_menu(selected: &[&std::path::Path]) -> menu::Item<TabAction, St
             .reserve_icon()
             .checked(shared == Some(None)),
     ));
-    menu::Item::Folder(fl!("folder-colour"), children)
+    menu::Item::Folder(fl!("folder-colour-menu"), children)
 }
 
 pub fn context_menu<'a>(

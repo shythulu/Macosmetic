@@ -333,6 +333,7 @@ look-image-missing = Custom image (file missing)
 preview-list = List
 preview-sidebar = Sidebar
 folder-colour = Colour
+folder-colour-menu = Folder colour
 colour-none = None
 colour-unset = No colour
 no-coloured-folders = This icon theme has no coloured folders.
