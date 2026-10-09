@@ -17,7 +17,8 @@
 //!
 //! Every theme the app installs carries a marker file naming the archive it came from, so
 //! only those can be removed, and an installed theme whose archive the catalog has since
-//! moved on from can be updated in place.
+//! moved on from can be updated in place. After any of these the app asks the icon lookup
+//! to scan the theme directories again, so no restart is needed.
 
 use std::collections::HashSet;
 use std::fmt;

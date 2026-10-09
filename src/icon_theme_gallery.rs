@@ -86,8 +86,6 @@ pub struct Gallery {
     pub installs: HashMap<String, InstallState>,
     /// Failed installs whose raw error text is shown.
     pub details: HashSet<String>,
-    /// Themes installed since launch, which the icon lookup cannot see until a restart.
-    pub needs_restart: HashSet<String>,
 }
 
 impl Gallery {
@@ -101,18 +99,7 @@ impl Gallery {
                 .map(icon_theme_catalog::previews)
                 .collect();
         }
-        self.installed_previews = themes
-            .iter()
-            .map(|theme| {
-                // A theme installed since launch has nothing the lookup can find yet.
-                if self.needs_restart.contains(&theme.id)
-                    && let Some(index) = catalog.themes.iter().position(|t| t.id == theme.id)
-                {
-                    return self.catalog_previews[index].clone();
-                }
-                previews(theme)
-            })
-            .collect();
+        self.installed_previews = themes.iter().map(previews).collect();
         self.markers = themes
             .iter()
             .map(|theme| {
@@ -158,7 +145,6 @@ impl Gallery {
             vec![widget::text::heading(fl!("installed-icon-themes")).into()];
         for (index, info) in themes.iter().enumerate() {
             let is_active = info.id == active;
-            let needs_restart = self.needs_restart.contains(&info.id);
             let marker = self.markers.get(index).and_then(Option::as_ref);
             let entry = icon_theme_catalog::theme(&info.id);
             let mut title = vec![
@@ -173,13 +159,6 @@ impl Gallery {
                     title.push(
                         widget::button::standard(fl!("retry"))
                             .on_press(Message::IconThemeUpdate(info.id.clone()))
-                            .into(),
-                    );
-                }
-                None if needs_restart => {
-                    title.push(
-                        widget::button::suggested(fl!("restart-to-use"))
-                            .on_press(Message::Restart)
                             .into(),
                     );
                 }
@@ -261,7 +240,7 @@ impl Gallery {
                     .padding(0)
                     .width(Length::Fill)
                     .selected(is_active)
-                    .on_press_maybe((!needs_restart).then_some(Message::IconTheme(index)))
+                    .on_press(Message::IconTheme(index))
                     .into(),
             );
         }

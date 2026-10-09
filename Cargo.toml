@@ -211,6 +211,13 @@ libcosmic = { git = "https://github.com/shythulu/libcosmic.git", branch = "macos
 cosmic-config = { git = "https://github.com/shythulu/libcosmic.git", branch = "macosmetic" }
 cosmic-theme = { git = "https://github.com/shythulu/libcosmic.git", branch = "macosmetic" }
 
+# The icon lookup, vendored from pop-os/freedesktop-icons at the revision the lock pinned,
+# with a `reload_themes()` so a theme installed from the gallery is usable without a
+# restart. See vendor/freedesktop-icons/MACOSMETIC.md. The patch applies to libcosmic's
+# copy as well, since both name the same upstream URL.
+[patch.'https://github.com/pop-os/freedesktop-icons']
+cosmic-freedesktop-icons = { path = "vendor/freedesktop-icons" }
+
 # [patch.'https://github.com/pop-os/libcosmic']
 # libcosmic = { path = "../libcosmic" }
 # cosmic-config = { path = "../libcosmic/cosmic-config" }

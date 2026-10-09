@@ -517,8 +517,6 @@ pub enum Message {
     Preview(Option<Entity>),
     /// Leave, once the pending operations have finished.
     Quit,
-    /// Start a new instance and quit this one.
-    Restart,
     ReloadMimeAppCache,
     /// The application was brought to the front, which on macOS is how a click on the Dock icon
     /// asks for a window back.
@@ -2474,6 +2472,14 @@ impl App {
         }
     }
 
+    /// Picks up themes installed or removed on disk, in the lookup and in the gallery.
+    fn reload_icon_themes(&mut self) {
+        #[cfg(unix)]
+        freedesktop_icons::reload_themes();
+        self.load_icon_themes();
+        self.icon_theme_gallery.refresh(&self.icon_themes);
+    }
+
     fn installed_icon_theme_ids(&self) -> HashSet<String> {
         self.icon_themes
             .iter()
@@ -3463,14 +3469,10 @@ impl Application for App {
                             *current = step;
                         }
                     }
-                    icon_theme_catalog::InstallEvent::Installed(id, ids) => {
+                    icon_theme_catalog::InstallEvent::Installed(id, _ids) => {
                         gallery.installs.remove(&id);
                         let updated = self.icon_themes.iter().any(|theme| theme.id == id);
-                        if !updated {
-                            gallery.needs_restart.extend(ids);
-                        }
-                        self.load_icon_themes();
-                        self.icon_theme_gallery.refresh(&self.icon_themes);
+                        self.reload_icon_themes();
                         if updated && id == self.icon_theme {
                             // The active theme's files were swapped; redraw from the new ones.
                             return self.icon_theme_changed();
@@ -3481,8 +3483,7 @@ impl Application for App {
                             .installs
                             .insert(id, icon_theme_gallery::InstallState::Failed(error));
                         // Part of the plan may have landed before the failure.
-                        self.load_icon_themes();
-                        self.icon_theme_gallery.refresh(&self.icon_themes);
+                        self.reload_icon_themes();
                     }
                     icon_theme_catalog::InstallEvent::Cancelled(id) => {
                         gallery.installs.remove(&id);
@@ -3511,17 +3512,8 @@ impl Application for App {
                 if let Err(err) = result {
                     log::warn!("failed to remove icon theme {id}: {err}");
                 }
-                self.icon_theme_gallery.needs_restart.remove(&id);
-                self.load_icon_themes();
-                self.icon_theme_gallery.refresh(&self.icon_themes);
+                self.reload_icon_themes();
             }
-            Message::Restart => match env::current_exe() {
-                Ok(exe) => match process::Command::new(&exe).args(env::args_os().skip(1)).spawn() {
-                    Ok(_child) => return self.update(Message::Quit),
-                    Err(err) => log::error!("failed to restart {}: {err}", exe.display()),
-                },
-                Err(err) => log::error!("failed to find the executable to restart: {err}"),
-            },
             Message::ToolkitConfig(config) => {
                 if config.icon_theme != self.icon_theme {
                     // libcosmic applies this too; doing it here first means the rebuild

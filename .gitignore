@@ -9,5 +9,6 @@
 /target/
 /test/
 /vendor.tar
-/vendor/
+/vendor/*
+!/vendor/freedesktop-icons/
 .DS_Store
