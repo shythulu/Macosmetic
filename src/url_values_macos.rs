@@ -23,7 +23,7 @@ use objc2::runtime::AnyObject;
 use objc2_foundation::{
     NSArray, NSBundle, NSDate, NSDictionary, NSNumber, NSString, NSURL,
     NSURLAddedToDirectoryDateKey, NSURLContentTypeKey, NSURLIsPackageKey,
-    NSURLLocalizedTypeDescriptionKey, NSURLResourceKey,
+    NSURLLocalizedTypeDescriptionKey, NSURLResourceKey, NSURLTagNamesKey,
 };
 use objc2_uniform_type_identifiers::UTType;
 
@@ -141,6 +141,21 @@ fn kind_from(
         type_id,
         description,
     })
+}
+
+/// The Finder tag names on `path`, in the order Finder stores them. Names only: this key does
+/// not carry the tag colours.
+pub(crate) fn tag_names(path: &Path) -> Option<Vec<String>> {
+    // SAFETY: `NSURLTagNamesKey` is an immutable Foundation constant.
+    let value = resource_value(path, unsafe { NSURLTagNamesKey })?;
+    let array = value.downcast::<NSArray>().ok()?;
+    Some(
+        array
+            .iter()
+            .filter_map(|name| name.downcast::<NSString>().ok())
+            .map(|name| name.to_string())
+            .collect(),
+    )
 }
 
 /// The marketing version (`CFBundleShortVersionString`) of an application bundle.

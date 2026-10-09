@@ -251,6 +251,7 @@ fn network_scan(uri: &str, sizes: IconSizes) -> Result<Vec<tab::Item>, String> {
             kind_opt: None,
             date_added_opt: None,
             get_info: Default::default(),
+            tags: Vec::new(),
         });
     }
     Ok(items)

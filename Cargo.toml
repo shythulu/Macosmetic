@@ -206,6 +206,8 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
     "CFDate",
     "CFString",
 ] }
+# Finder tags are a binary plist in an extended attribute (src/tags.rs).
+plist = { version = "1", default-features = false }
 objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = [
     "std",
     "bitflags",

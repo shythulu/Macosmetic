@@ -321,6 +321,7 @@ item-where = Where: {$path}
 item-version = Version: {$version}
 items = Items: {$items}
 item-size = Size: {$size}
+tags = Tags: {$tags}
 item-created = Created: {$created}
 item-modified = Modified: {$modified}
 item-accessed = Accessed: {$accessed}

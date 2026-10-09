@@ -56,6 +56,7 @@ mod spawn_detached;
 pub(crate) mod spotlight_macos;
 mod status_bar;
 pub mod tab;
+pub mod tags;
 mod thumbnail_cacher;
 mod thumbnailer;
 pub(crate) mod trash;

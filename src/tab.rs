@@ -857,6 +857,7 @@ pub fn item_from_gvfs_info(path: PathBuf, file_info: gio::FileInfo, sizes: IconS
         kind_opt: None,
         date_added_opt: None,
         get_info: OnceCell::new(),
+        tags: Vec::new(),
     }
 }
 
@@ -984,6 +985,11 @@ fn item_from_entry_with_dataless(
     } else {
         local_kind_and_date_added(&path)
     };
+    let tags = if remote {
+        Vec::new()
+    } else {
+        crate::tags::read(&path, &metadata)
+    };
 
     Item {
         name,
@@ -1015,6 +1021,7 @@ fn item_from_entry_with_dataless(
         kind_opt,
         date_added_opt,
         get_info: OnceCell::new(),
+        tags,
     }
 }
 
@@ -1080,6 +1087,7 @@ pub fn item_from_denied_entry(path: PathBuf, name: String, is_dir: bool, sizes: 
         kind_opt: None,
         date_added_opt: None,
         get_info: OnceCell::new(),
+        tags: Vec::new(),
     }
 }
 
@@ -1150,6 +1158,7 @@ pub fn item_from_trash_entry(
         kind_opt: None,
         date_added_opt: None,
         get_info: OnceCell::new(),
+        tags: Vec::new(),
     }
 }
 
@@ -1679,6 +1688,7 @@ pub fn scan_desktop(
             kind_opt: None,
             date_added_opt: None,
             get_info: OnceCell::new(),
+            tags: Vec::new(),
         });
     }
 
@@ -2933,6 +2943,8 @@ pub struct Item {
     pub date_added_opt: Option<SystemTime>,
     /// Get Info fields, read the first time the details pane shows this item.
     pub get_info: OnceCell<GetInfo>,
+    /// Finder tags, read at scan time on local macOS volumes. Empty elsewhere.
+    pub tags: Vec<crate::tags::Tag>,
 }
 
 /// What an item is, as the platform names it.
@@ -3046,6 +3058,72 @@ impl Item {
             .ellipsize(text::Ellipsize::Middle(text::EllipsizeHeightLimit::Lines(
                 1,
             )))
+    }
+
+    /// Finder-style tag dots: up to three overlapping circles, one per coloured tag.
+    /// Returns the dots and their width. `None` when no tag has a colour, so untagged names
+    /// render exactly as before.
+    fn tag_dots<'a>(&self) -> Option<(Element<'a, Message>, f32)> {
+        const DOT: f32 = 10.0;
+        const STEP: f32 = 6.0;
+        let colours: Vec<_> = crate::tags::dot_colours(&self.tags, 3)
+            .filter_map(crate::tags::TagColour::rgb)
+            .collect();
+        if colours.is_empty() {
+            return None;
+        }
+        let width = DOT + STEP * (colours.len() - 1) as f32;
+        let dots = colours.into_iter().enumerate().map(|(i, (r, g, b))| {
+            let dot = widget::container(space::horizontal().width(Length::Fixed(DOT)))
+                .width(Length::Fixed(DOT))
+                .height(Length::Fixed(DOT))
+                .style(move |theme: &cosmic::Theme| widget::container::Style {
+                    background: Some(Color::from_rgb8(r, g, b).into()),
+                    // A ring in the background colour separates overlapping dots.
+                    border: Border {
+                        color: theme.cosmic().bg_color().into(),
+                        width: 1.0,
+                        radius: (DOT / 2.0).into(),
+                    },
+                    ..Default::default()
+                });
+            // A stack takes its size from the first layer, so every layer spans the full width.
+            Element::from(
+                widget::container(dot)
+                    .padding(padding::left(STEP * i as f32))
+                    .width(Length::Fixed(width)),
+            )
+        });
+        Some((
+            widget::container(stack(dots))
+                .width(Length::Fixed(width))
+                .into(),
+            width,
+        ))
+    }
+
+    /// `name` followed by the tag dots, if any. With dots, the name is limited to `max_width`
+    /// minus the dots, so it wraps or ellipsizes instead of pushing them out of view. `None`
+    /// lets the name fill the space the dots leave.
+    fn with_tag_dots<'a>(
+        &self,
+        name: widget::Text<'a, cosmic::Theme, cosmic::Renderer>,
+        max_width: Option<f32>,
+    ) -> Element<'a, Message> {
+        match self.tag_dots() {
+            Some((dots, dots_width)) => {
+                const GAP: f32 = 4.0;
+                let width = match max_width {
+                    Some(max) => Length::Fixed((max - dots_width - GAP).max(0.0)),
+                    None => Length::Fill,
+                };
+                widget::row::with_children([name.width(width).into(), dots])
+                    .align_y(Alignment::Center)
+                    .spacing(GAP)
+                    .into()
+            }
+            None => name.into(),
+        }
     }
 
     pub fn path_opt(&self) -> Option<&PathBuf> {
@@ -3381,6 +3459,10 @@ impl Item {
         {
             let (width, height) = img;
             details = details.push(widget::text::body(format!("{width}x{height}")));
+        }
+        if !self.tags.is_empty() {
+            let names: Vec<&str> = self.tags.iter().map(|tag| tag.name.as_str()).collect();
+            details = details.push(widget::text::body(fl!("tags", tags = names.join(", "))));
         }
         column = column.push(details);
 
@@ -6993,17 +7075,20 @@ impl Tab {
                         ))
                         .into(),
                         widget::tooltip(
-                            widget::button::custom(Item::grid_display_name(&item.display_name))
-                                .id(item.button_id.clone())
-                                .padding([0, space_xxxs])
-                                .class(button_style(
-                                    item.selected,
-                                    item.highlighted,
-                                    item.cut,
-                                    true,
-                                    true,
-                                    matches!(self.mode, Mode::Desktop),
-                                )),
+                            widget::button::custom(item.with_tag_dots(
+                                Item::grid_display_name(&item.display_name),
+                                Some((item_width - 2 * space_xxxs as usize) as f32),
+                            ))
+                            .id(item.button_id.clone())
+                            .padding([0, space_xxxs])
+                            .class(button_style(
+                                item.selected,
+                                item.highlighted,
+                                item.cut,
+                                true,
+                                true,
+                                matches!(self.mode, Mode::Desktop),
+                            )),
                             widget::text::body(item.hover_text()),
                             widget::tooltip::Position::Bottom,
                         )
@@ -7374,7 +7459,10 @@ impl Tab {
                                 .size(icon_size)
                                 .into(),
                             widget::column::with_children([
-                                Item::list_display_name(item.display_name.clone()).into(),
+                                item.with_tag_dots(
+                                    Item::list_display_name(item.display_name.clone()),
+                                    None,
+                                ),
                                 //TODO: translate?
                                 widget::text::caption(format!("{modified_text} - {size_text}"))
                                     .into(),
@@ -7391,7 +7479,10 @@ impl Tab {
                                 .size(icon_size)
                                 .into(),
                             widget::column::with_children([
-                                Item::list_display_name(item.display_name.clone()).into(),
+                                item.with_tag_dots(
+                                    Item::list_display_name(item.display_name.clone()),
+                                    None,
+                                ),
                                 widget::text::caption(match item.path_opt() {
                                     Some(path) => path.display().to_string(),
                                     None => String::new(),
@@ -7416,9 +7507,11 @@ impl Tab {
                                 .content_fit(ContentFit::Contain)
                                 .size(icon_size)
                                 .into(),
-                            Item::list_display_name(item.display_name.clone())
-                                .width(Length::Fill)
-                                .into(),
+                            item.with_tag_dots(
+                                Item::list_display_name(item.display_name.clone())
+                                    .width(Length::Fill),
+                                None,
+                            ),
                             widget::text::body(modified_text.clone())
                                 .width(Length::Fixed(modified_width))
                                 .into(),
