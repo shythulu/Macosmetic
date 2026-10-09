@@ -42,6 +42,8 @@ mod mouse_area;
 pub mod operation;
 #[cfg(all(target_os = "macos", feature = "quicklook"))]
 pub(crate) mod quicklook_macos;
+#[cfg(target_os = "macos")]
+mod share_macos;
 mod spawn_detached;
 pub mod tab;
 mod thumbnail_cacher;

@@ -206,7 +206,11 @@ pub fn context_menu<'a>(
                 // Finder is the peer file manager on macOS; there is nothing to hand an
                 // item over to anywhere else.
                 #[cfg(target_os = "macos")]
-                children.push(menu_item(fl!("reveal-in-finder"), Action::RevealInFinder));
+                {
+                    children.push(menu_item(fl!("reveal-in-finder"), Action::RevealInFinder));
+                    children.push(menu_item(fl!("share"), Action::Share));
+                    children.push(menu_item(fl!("airdrop"), Action::AirDrop));
+                }
                 let action_items = context_action_items(selected, selected_dir);
                 if !action_items.is_empty() {
                     children.push(menu::Item::Divider);
