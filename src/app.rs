@@ -544,6 +544,7 @@ pub enum Message {
     SearchActivate,
     SearchClear,
     SearchInput(String),
+    SetContextQuickBar(bool),
     SetShowDetails(bool),
     SetShowRecents(bool),
     SetTypeToSearch(TypeToSearch),
@@ -2463,6 +2464,13 @@ impl App {
                     settings::item::builder(fl!("show-recents"))
                         .toggler(self.config.show_recents, Message::SetShowRecents)
                 })
+                .into(),
+            settings::section()
+                .title(fl!("context-menu"))
+                .add(
+                    settings::item::builder(fl!("context-quick-bar"))
+                        .toggler(self.config.context_quick_bar, Message::SetContextQuickBar),
+                )
                 .into(),
         ])
         .into()
@@ -5039,6 +5047,10 @@ impl Application for App {
                 config_set!(show_recents, show_recents);
                 return self.update_config();
             }
+            Message::SetContextQuickBar(context_quick_bar) => {
+                config_set!(context_quick_bar, context_quick_bar);
+                return self.update_config();
+            }
             Message::StatusBar(message) => {
                 if let status_bar::Message::Toggle = message {
                     config_set!(show_status_bar, !self.config.show_status_bar);
@@ -7325,6 +7337,7 @@ impl Application for App {
                     &self.modifiers,
                     self.clipboard_has_content(),
                     &self.config.context_actions,
+                    self.config.context_quick_bar,
                 )
                 .map(move |message| Message::TabMessage(Some(entity), message));
             tab_column = tab_column.push(tab_view);
@@ -7355,6 +7368,7 @@ impl Application for App {
                                 &window.modifiers,
                                 self.clipboard_has_content(),
                                 &self.config.context_actions,
+                                self.config.context_quick_bar,
                             )
                             .map(move |message| Message::TabMessage(Some(*entity), message)),
                         None => widget::space::vertical().into(),

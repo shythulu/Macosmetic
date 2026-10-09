@@ -346,6 +346,8 @@ colour-grey = Grey
 
 ## Settings
 settings = Settings
+context-menu = Context menu
+context-quick-bar = Show quick actions in context menus
 single-click = Single click to open
 show-recents = Recents folder in the sidebar
 

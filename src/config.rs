@@ -205,6 +205,8 @@ pub struct Config {
     pub dialog: DialogConfig,
     pub desktop: DesktopConfig,
     pub context_actions: Vec<ContextActionPreset>,
+    /// The row of cut, copy, paste and rename buttons at the top of context menus.
+    pub context_quick_bar: bool,
     pub thumb_cfg: ThumbCfg,
     pub favorites: Vec<Favorite>,
     /// Looks the user gave individual folders, keyed by path. Unlike `State::sort_names`
@@ -272,6 +274,7 @@ impl Default for Config {
             desktop: DesktopConfig::default(),
             dialog: DialogConfig::default(),
             context_actions: Vec::new(),
+            context_quick_bar: true,
             thumb_cfg: ThumbCfg::default(),
             favorites: vec![
                 Favorite::Home,
@@ -442,6 +445,16 @@ pub struct TimeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_quick_bar_defaults_on() {
+        assert!(Config::default().context_quick_bar);
+        // A config written before the field existed has no key for it.
+        let config: Config = serde_json::from_str("{}").unwrap();
+        assert!(config.context_quick_bar);
+        let config: Config = serde_json::from_str(r#"{"context_quick_bar": false}"#).unwrap();
+        assert!(!config.context_quick_bar);
+    }
 
     #[test]
     fn favorite_with_label_converts_path_to_named() {

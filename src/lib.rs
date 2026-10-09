@@ -43,6 +43,7 @@ mod mouse_area;
 pub mod operation;
 #[cfg(all(target_os = "macos", feature = "quicklook"))]
 pub(crate) mod quicklook_macos;
+mod quick_bar;
 mod spawn_detached;
 mod status_bar;
 pub mod tab;

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use cosmic::{Element, theme};
 use cosmic::app::Core;
 use cosmic::iced::keyboard::Modifiers;
 use cosmic::widget::menu::action::MenuAction;
 use cosmic::widget::menu::key_bind::KeyBind;
 use cosmic::widget::menu::{self, ItemHeight, ItemWidth, MenuBar};
 use cosmic::widget::{self, responsive_menu_bar};
+use cosmic::{Element, theme};
 use i18n_embed::LanguageLoader;
 use mime_guess::Mime;
 use std::collections::HashMap;
@@ -16,6 +16,7 @@ use crate::app::{Action, Message};
 use crate::config::{Config, ContextActionPreset};
 use crate::fl;
 use crate::key_bind::{menu_key_bind, menu_key_binds};
+use crate::quick_bar;
 use crate::tab::{
     self, HeadingOptions, ItemMetadata, Location, LocationMenuAction, SearchLocation, Tab,
 };
@@ -54,6 +55,7 @@ pub fn context_menu<'a>(
     modifiers: &Modifiers,
     clipboard_paste_available: bool,
     context_actions: &[ContextActionPreset],
+    context_quick_bar: bool,
 ) -> Vec<menu::Tree<tab::Message>> {
     let menu_item =
         |label: String, action: Action| menu::Item::Button(label, None, TabAction(action));
@@ -62,6 +64,14 @@ pub fn context_menu<'a>(
 
     // Allow paste when clipboard has data and we're in a location that supports it
     let can_paste = clipboard_paste_available && tab.location.supports_paste();
+
+    // The quick-action bar at the top of the menu. Empty while the setting is off, or in menus
+    // that have no cut/copy/paste entries to lift out of the list.
+    let mut quick_items: Vec<quick_bar::Item> = Vec::new();
+    // Whether the list below the bar should keep its own entry for this action.
+    let list_keeps = |quick_items: &[quick_bar::Item], action: quick_bar::QuickAction| {
+        !quick_bar::carries(quick_items, action)
+    };
 
     let (sort_name, sort_direction, _) = tab.sort_options();
     let sort_item = |label: String, variant| {
@@ -164,12 +174,23 @@ pub fn context_menu<'a>(
                             .map(|(i, action)| menu_item(action.name, Action::ExecEntryAction(i))),
                     );
                 }
+                if context_quick_bar {
+                    quick_items = quick_bar::items(quick_bar::Context {
+                        selected,
+                        selected_mount_points: 0,
+                        can_paste,
+                    });
+                }
                 children.push(menu::Item::Divider);
-                children.push(menu_item(fl!("rename"), Action::Rename));
-                children.push(menu_item(fl!("cut"), Action::Cut));
+                if list_keeps(&quick_items, quick_bar::QuickAction::Rename) {
+                    children.push(menu_item(fl!("rename"), Action::Rename));
+                }
+                if list_keeps(&quick_items, quick_bar::QuickAction::Cut) {
+                    children.push(menu_item(fl!("cut"), Action::Cut));
+                }
                 if modifiers.shift() && !modifiers.control() {
                     children.push(menu_item(fl!("copy-path"), Action::CopyPath));
-                } else {
+                } else if list_keeps(&quick_items, quick_bar::QuickAction::Copy) {
                     children.push(menu_item(fl!("copy"), Action::Copy));
                 }
                 // Should this simply bypass trash and remove the shortcut?
@@ -212,14 +233,26 @@ pub fn context_menu<'a>(
                     children.push(menu::Item::Divider);
                     children.extend(action_items);
                 }
+                if context_quick_bar {
+                    quick_items = quick_bar::items(quick_bar::Context {
+                        selected,
+                        selected_mount_points: usize::try_from(selected_mount_point)
+                            .unwrap_or_default(),
+                        can_paste,
+                    });
+                }
                 children.push(menu::Item::Divider);
                 if selected_mount_point == 0 {
-                    children.push(menu_item(fl!("rename"), Action::Rename));
-                    children.push(menu_item(fl!("cut"), Action::Cut));
+                    if list_keeps(&quick_items, quick_bar::QuickAction::Rename) {
+                        children.push(menu_item(fl!("rename"), Action::Rename));
+                    }
+                    if list_keeps(&quick_items, quick_bar::QuickAction::Cut) {
+                        children.push(menu_item(fl!("cut"), Action::Cut));
+                    }
                 }
                 if modifiers.shift() && !modifiers.control() {
                     children.push(menu_item(fl!("copy-path"), Action::CopyPath));
-                } else {
+                } else if list_keeps(&quick_items, quick_bar::QuickAction::Copy) {
                     children.push(menu_item(fl!("copy"), Action::Copy));
                 }
                 if selected_mount_point == 0 {
@@ -293,10 +326,23 @@ pub fn context_menu<'a>(
                 if tab.mode.multiple() {
                     children.push(menu_item(fl!("select-all"), Action::SelectAll));
                 }
-                if can_paste {
-                    children.push(menu_item(fl!("paste"), Action::Paste));
-                } else {
-                    children.push(menu_item_disabled(fl!("paste"), Action::Paste));
+                if context_quick_bar {
+                    quick_items = quick_bar::items(quick_bar::Context {
+                        selected: 0,
+                        selected_mount_points: 0,
+                        can_paste,
+                    });
+                }
+                if list_keeps(&quick_items, quick_bar::QuickAction::Paste) {
+                    if can_paste {
+                        children.push(menu_item(fl!("paste"), Action::Paste));
+                    } else {
+                        children.push(menu_item_disabled(fl!("paste"), Action::Paste));
+                    }
+                }
+                // Select all and paste may both be gone; do not stack two dividers.
+                if matches!(children.last(), Some(menu::Item::Divider)) {
+                    children.pop();
                 }
 
                 //TODO: only show if cosmic-settings is found?
@@ -316,7 +362,9 @@ pub fn context_menu<'a>(
                     ));
                 }
 
-                children.push(menu::Item::Divider);
+                if !children.is_empty() {
+                    children.push(menu::Item::Divider);
+                }
                 // TODO: Nested menu
                 children.push(sort_item(fl!("sort-by-name"), HeadingOptions::Name));
                 children.push(sort_item(fl!("sort-by-modified"), HeadingOptions::Modified));
@@ -408,11 +456,19 @@ pub fn context_menu<'a>(
         }
     }
 
-    let key_binds: HashMap<KeyBind, TabAction> = key_binds
+    let tab_key_binds: HashMap<KeyBind, TabAction> = key_binds
         .iter()
         .map(|(key_bind, action)| (menu_key_bind(key_bind), TabAction(*action)))
         .collect();
-    menu::items(&key_binds, children)
+    let mut trees = Vec::with_capacity(children.len() + 2);
+    if !quick_items.is_empty() {
+        trees.push(menu::Tree::from(quick_bar::view(&quick_items, key_binds)));
+        trees.push(menu::Tree::from(Element::<'static, tab::Message>::from(
+            widget::divider::horizontal::light(),
+        )));
+    }
+    trees.extend(menu::items(&tab_key_binds, children));
+    trees
 }
 
 pub fn dialog_menu(
