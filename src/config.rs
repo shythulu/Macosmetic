@@ -210,6 +210,10 @@ pub struct Config {
     /// Looks the user gave individual folders, keyed by path. Unlike `State::sort_names`
     /// these are never evicted: each one is an explicit choice.
     pub folder_looks: BTreeMap<PathBuf, FolderLook>,
+    /// The last icons picked in the "Customize folder" drawer, most recent first, at most
+    /// [`crate::folder_look::RECENT_MAX`].
+    #[serde(default)]
+    pub recent_folder_looks: Vec<FolderLook>,
     /// Key bindings that override the defaults from [`crate::key_bind::key_binds`].
     ///
     /// Optional: configurations written before this field existed simply have no overrides.
@@ -282,6 +286,7 @@ impl Default for Config {
                 Favorite::Videos,
             ],
             folder_looks: BTreeMap::new(),
+            recent_folder_looks: Vec::new(),
             keybinds: Shortcuts::new(),
             show_details: false,
             show_recents: true,

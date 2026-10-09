@@ -90,6 +90,81 @@ pub fn folder_colour(id: &str) -> Option<&'static FolderColour> {
     FOLDER_COLOURS.iter().find(|colour| colour.id == id)
 }
 
+/// The translated name of a colour, for the menu and the drawer.
+pub fn colour_label(id: &str) -> String {
+    match id {
+        "red" => crate::fl!("colour-red"),
+        "orange" => crate::fl!("colour-orange"),
+        "yellow" => crate::fl!("colour-yellow"),
+        "green" => crate::fl!("colour-green"),
+        "cyan" => crate::fl!("colour-cyan"),
+        "blue" => crate::fl!("colour-blue"),
+        "violet" => crate::fl!("colour-violet"),
+        "magenta" => crate::fl!("colour-magenta"),
+        "brown" => crate::fl!("colour-brown"),
+        "grey" => crate::fl!("colour-grey"),
+        other => other.to_string(),
+    }
+}
+
+/// What a selection of folders has in common.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Shared {
+    /// No folder has a look.
+    None,
+    /// The folders have different looks, or only some have one.
+    Mixed,
+    /// Every folder has this look.
+    Look(FolderLook),
+}
+
+impl Shared {
+    pub fn look(&self) -> Option<&FolderLook> {
+        match self {
+            Self::Look(look) => Some(look),
+            _ => None,
+        }
+    }
+
+    /// The colour id when every folder has the same colour, `Some(None)` when none has
+    /// any look, `None` when they differ.
+    pub fn colour(&self) -> Option<Option<&str>> {
+        match self {
+            Self::None => Some(None),
+            Self::Look(FolderLook::Colour(id)) => Some(Some(id)),
+            _ => None,
+        }
+    }
+}
+
+/// Folds the looks of a selection into one [`Shared`] state.
+pub fn shared_look(looks: impl IntoIterator<Item = Option<FolderLook>>) -> Shared {
+    let mut looks = looks.into_iter();
+    let Some(first) = looks.next() else {
+        return Shared::None;
+    };
+    if looks.any(|look| look != first) {
+        return Shared::Mixed;
+    }
+    first.map_or(Shared::None, Shared::Look)
+}
+
+/// The looks the selected `paths` share; see [`shared_look`].
+pub fn shared_stored_look<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Shared {
+    shared_look(paths.into_iter().map(stored_look))
+}
+
+/// How many icon picks the drawer's Recent row remembers.
+pub const RECENT_MAX: usize = 8;
+
+/// Puts `look` at the front of `recent`, dropping any older copy and anything past
+/// [`RECENT_MAX`].
+pub fn push_recent(recent: &mut Vec<FolderLook>, look: FolderLook) {
+    recent.retain(|old| *old != look);
+    recent.insert(0, look);
+    recent.truncate(RECENT_MAX);
+}
+
 static LOOKS: LazyLock<RwLock<FxHashMap<PathBuf, FolderLook>>> =
     LazyLock::new(|| RwLock::new(FxHashMap::default()));
 
@@ -609,6 +684,54 @@ mod tests {
                 assert!(rgb[i].abs_diff(back[i]) <= 1, "{rgb:?} -> {back:?}");
             }
         }
+    }
+
+    #[test]
+    fn shared_look_distinguishes_none_mixed_and_same() {
+        let red = || Some(FolderLook::Colour("red".into()));
+        assert_eq!(shared_look(Vec::new()), Shared::None);
+        assert_eq!(shared_look([None, None]), Shared::None);
+        assert_eq!(shared_look([red(), None]), Shared::Mixed);
+        assert_eq!(
+            shared_look([red(), Some(FolderLook::Colour("blue".into()))]),
+            Shared::Mixed
+        );
+        let same = shared_look([red(), red()]);
+        assert_eq!(same, Shared::Look(red().unwrap()));
+        assert_eq!(same.colour(), Some(Some("red")));
+        assert_eq!(Shared::None.colour(), Some(None));
+        assert_eq!(Shared::Mixed.colour(), None);
+        let icon = Shared::Look(FolderLook::Icon {
+            theme: None,
+            name: "folder-git".into(),
+        });
+        // An icon look has no colour to check, but it is not "none" either.
+        assert_eq!(icon.colour(), None);
+    }
+
+    #[test]
+    fn recent_picks_dedupe_and_cap() {
+        let icon = |name: &str| FolderLook::Icon {
+            theme: None,
+            name: name.into(),
+        };
+        let mut recent = Vec::new();
+        for i in 0..RECENT_MAX + 2 {
+            push_recent(&mut recent, icon(&format!("folder-{i}")));
+        }
+        assert_eq!(recent.len(), RECENT_MAX);
+        assert_eq!(recent[0], icon(&format!("folder-{}", RECENT_MAX + 1)));
+        // Picking an old one again moves it to the front without a duplicate.
+        push_recent(&mut recent, icon("folder-5"));
+        assert_eq!(recent[0], icon("folder-5"));
+        assert_eq!(recent.len(), RECENT_MAX);
+        assert_eq!(
+            recent
+                .iter()
+                .filter(|look| **look == icon("folder-5"))
+                .count(),
+            1
+        );
     }
 
     #[test]

@@ -246,6 +246,8 @@ pub enum Action {
     SelectFirst,
     SelectLast,
     SelectAll,
+    /// Give the selected folders this colour, or `None` to take their colour away.
+    SetFolderColour(Option<&'static str>),
     SetSort(HeadingOptions, bool),
     Settings,
     ShowPackageContents,
@@ -329,6 +331,7 @@ impl Action {
             Self::SelectAll => Message::TabMessage(entity_opt, tab::Message::SelectAll),
             Self::SelectFirst => Message::TabMessage(entity_opt, tab::Message::SelectFirst),
             Self::SelectLast => Message::TabMessage(entity_opt, tab::Message::SelectLast),
+            Self::SetFolderColour(colour) => Message::SetFolderColour(entity_opt, *colour),
             Self::SetSort(sort, dir) => {
                 Message::TabMessage(entity_opt, tab::Message::SetSort(*sort, *dir))
             }
@@ -434,6 +437,8 @@ pub enum Message {
     FolderLookIconSet(usize),
     FolderLookImageResult(DialogResult),
     FolderLookSearch(String),
+    /// Enter in the icon search: apply the icon when exactly one is left.
+    FolderLookSearchSubmit,
     /// Give the folders on the appearance page this look, or clear it with `None`.
     FolderLookSet(Option<FolderLook>),
     /// Use the installed icon theme at this index of the settings list.
@@ -548,6 +553,8 @@ pub enum Message {
     SearchActivate,
     SearchClear,
     SearchInput(String),
+    /// Colour the selected folders from the context menu, without opening the drawer.
+    SetFolderColour(Option<Entity>, Option<&'static str>),
     SetShowDetails(bool),
     SetShowRecents(bool),
     SetTypeToSearch(TypeToSearch),
@@ -854,6 +861,9 @@ pub struct App {
     /// The icon theme the app's icons were last built with.
     icon_theme: String,
     folder_appearance: Option<FolderAppearance>,
+    /// Where the icon theme gallery's back button goes: Settings, or the folder drawer
+    /// that opened it.
+    icon_themes_return: ContextPage,
     compio_tx: mpsc::Sender<Pin<Box<dyn Future<Output = ()> + Send>>>,
     context_page: ContextPage,
     dialog_pages: DialogPages,
@@ -2848,6 +2858,7 @@ impl Application for App {
             icon_theme_gallery: icon_theme_gallery::Gallery::default(),
             icon_theme: cosmic::icon_theme::default(),
             folder_appearance: None,
+            icon_themes_return: ContextPage::Settings,
             compio_tx,
             context_page: ContextPage::Preview(None, PreviewKind::Selected),
             dialog_pages: DialogPages::new(),
@@ -3425,19 +3436,49 @@ impl Application for App {
                 self.file_dialog_opt = None;
             }
             Message::CustomizeFolder(entity_opt) => {
-                let paths: Vec<PathBuf> = self
+                let mut paths: Vec<PathBuf> = self
                     .selected_paths(entity_opt)
                     .filter(|path| path.is_dir())
                     .collect();
+                if paths.is_empty() {
+                    // From the background menu: customize the folder being viewed.
+                    let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                    if let Some(Location::Path(path)) =
+                        self.tab_model.data::<Tab>(entity).map(|tab| &tab.location)
+                    {
+                        paths.push(path.clone());
+                    }
+                }
                 if !paths.is_empty() {
                     self.load_icon_themes();
-                    self.folder_appearance = Some(FolderAppearance::new(paths, &self.icon_themes));
+                    self.folder_appearance = Some(FolderAppearance::new(
+                        paths,
+                        &self.icon_themes,
+                        self.config.recent_folder_looks.clone(),
+                    ));
                     self.context_page = ContextPage::FolderAppearance;
                     self.set_show_context(true);
                 }
             }
             Message::FolderLookChooseImage => {
                 return self.choose_folder_image();
+            }
+            Message::SetFolderColour(entity_opt, colour) => {
+                let mut looks = self.config.folder_looks.clone();
+                for path in self.selected_paths(entity_opt).filter(|path| path.is_dir()) {
+                    match colour {
+                        Some(id) => {
+                            looks.insert(path, FolderLook::Colour(id.to_string()));
+                        }
+                        // "None" takes the colour away; an icon or image look stays.
+                        None => {
+                            if matches!(looks.get(&path), Some(FolderLook::Colour(_))) {
+                                looks.remove(&path);
+                            }
+                        }
+                    }
+                }
+                return self.set_folder_looks(looks);
             }
             Message::FolderLookIconSet(index) => {
                 if let Some(page) = &mut self.folder_appearance {
@@ -3467,7 +3508,41 @@ impl Application for App {
                     page.set_search(search);
                 }
             }
+            Message::FolderLookSearchSubmit => {
+                if let Some(look) = self
+                    .folder_appearance
+                    .as_ref()
+                    .and_then(FolderAppearance::single_match)
+                {
+                    return self.update(Message::FolderLookSet(Some(look)));
+                }
+            }
             Message::FolderLookSet(look) => {
+                if self.folder_appearance.is_none() {
+                    return Task::none();
+                }
+                if let Some(icon @ FolderLook::Icon { .. }) = &look {
+                    // Remember icon picks for the drawer's Recent row.
+                    let mut recent = self.config.recent_folder_looks.clone();
+                    folder_look::push_recent(&mut recent, icon.clone());
+                    if recent != self.config.recent_folder_looks {
+                        match &self.config_handler {
+                            Some(config_handler) => {
+                                if let Err(err) =
+                                    self.config.set_recent_folder_looks(config_handler, recent)
+                                {
+                                    log::warn!(
+                                        "failed to save config \"recent_folder_looks\": {err}"
+                                    );
+                                }
+                            }
+                            None => self.config.recent_folder_looks = recent,
+                        }
+                        if let Some(page) = &mut self.folder_appearance {
+                            page.set_recent(self.config.recent_folder_looks.clone());
+                        }
+                    }
+                }
                 let Some(page) = &self.folder_appearance else {
                     return Task::none();
                 };
@@ -5458,6 +5533,13 @@ impl Application for App {
                 match context_page {
                     ContextPage::Settings => self.load_icon_themes(),
                     ContextPage::IconThemes => {
+                        self.icon_themes_return = if self.core.window.show_context
+                            && self.context_page == ContextPage::FolderAppearance
+                        {
+                            ContextPage::FolderAppearance
+                        } else {
+                            ContextPage::Settings
+                        };
                         self.load_icon_themes();
                         self.icon_theme_gallery.refresh(&self.icon_themes);
                     }
@@ -6283,18 +6365,26 @@ impl Application for App {
                 ),
                 Message::ToggleContextPage(ContextPage::FolderAppearance),
             )
-            .title(fl!("folder-appearance")),
+            .title(fl!("customize-folder-title"))
+            .actions(self.folder_appearance.as_ref().map_or_else(
+                || widget::space::horizontal().into(),
+                FolderAppearance::actions,
+            )),
             ContextPage::IconThemes => context_drawer::context_drawer(
                 self.icon_theme_gallery
                     .view(&self.icon_themes, &self.icon_theme),
                 Message::ToggleContextPage(ContextPage::IconThemes),
             )
             .title(fl!("icon-themes"))
-            .actions(
-                widget::button::text(fl!("settings"))
+            .actions({
+                let label = match self.icon_themes_return {
+                    ContextPage::FolderAppearance => fl!("customize-folder-title"),
+                    _ => fl!("settings"),
+                };
+                widget::button::text(label)
                     .leading_icon(widget::icon::from_name("go-previous-symbolic"))
-                    .on_press(Message::ToggleContextPage(ContextPage::Settings)),
-            ),
+                    .on_press(Message::ToggleContextPage(self.icon_themes_return.clone()))
+            }),
         })
     }
 
