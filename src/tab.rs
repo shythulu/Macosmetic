@@ -487,8 +487,39 @@ const fn format_time<'a>(
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn hidden_attribute(_metadata: &Metadata) -> bool {
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn hidden_attribute(_path: &Path, _metadata: &Metadata, _remote: bool) -> bool {
+    false
+}
+
+/// Whether the entry has the BSD `UF_HIDDEN` flag. The OS sets it on the conventional
+/// system names at `/` and on `~/Library`, so no name list is needed.
+///
+/// The flag is read with `lstat`, because `/etc`, `/tmp` and `/var` are hidden symlinks
+/// to unhidden directories and `metadata` follows links. On a remote mount the followed
+/// `metadata` is used instead, to save a round trip per entry.
+#[cfg(target_os = "macos")]
+fn hidden_attribute(path: &Path, metadata: &Metadata, remote: bool) -> bool {
+    use crate::fs_flags_macos as flags;
+    if remote {
+        flags::is_hidden(metadata)
+    } else {
+        flags::lstat_flags(path).map_or_else(|_| flags::is_hidden(metadata), flags::flags_hidden)
+    }
+}
+
+/// Whether reading this entry's content would make the OS download it first.
+///
+/// True for an `SF_DATALESS` placeholder, such as an evicted iCloud Drive file or folder.
+/// Callers treat such an entry like one on a remote mount: name-based mime, no thumbnail,
+/// no checksum and no directory walk.
+#[cfg(target_os = "macos")]
+pub fn is_dataless(metadata: &Metadata) -> bool {
+    crate::fs_flags_macos::is_dataless(metadata)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn is_dataless(_metadata: &Metadata) -> bool {
     false
 }
 
@@ -503,7 +534,7 @@ pub fn is_always_hidden(name: &str) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn hidden_attribute(metadata: &Metadata) -> bool {
+fn hidden_attribute(_path: &Path, metadata: &Metadata, _remote: bool) -> bool {
     use std::os::windows::fs::MetadataExt;
     // https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants
     const FILE_ATTRIBUTE_HIDDEN: u32 = 2;
@@ -579,9 +610,19 @@ pub fn fs_kind(metadata: &Metadata) -> FsKind {
     DEVICES.get(&metadata.dev()).map_or(FsKind::Local, |x| *x)
 }
 
-#[cfg(not(target_os = "linux"))]
+/// SMB, NFS, AFP and WebDAV mounts lack `MNT_LOCAL`, so they are `Remote`.
+#[cfg(target_os = "macos")]
+pub fn fs_kind(metadata: &Metadata) -> FsKind {
+    if crate::fs_flags_macos::metadata_is_local(metadata) {
+        FsKind::Local
+    } else {
+        FsKind::Remote
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn fs_kind(_metadata: &Metadata) -> FsKind {
-    //TODO: support BSD, macOS, Windows?
+    //TODO: support BSD, Windows?
     FsKind::Local
 }
 
@@ -827,10 +868,21 @@ pub fn item_from_entry(
     metadata: fs::Metadata,
     sizes: IconSizes,
 ) -> Item {
+    let dataless = is_dataless(&metadata);
+    item_from_entry_with_dataless(path, name, metadata, sizes, dataless)
+}
+
+/// [`item_from_entry`] with the dataless flag passed in, so tests can set it on an ordinary
+/// file. Dataless placeholders cannot be created without a file provider.
+fn item_from_entry_with_dataless(
+    path: PathBuf,
+    name: String,
+    metadata: fs::Metadata,
+    sizes: IconSizes,
+    dataless: bool,
+) -> Item {
     let mut is_desktop = false;
     let mut is_gvfs = false;
-
-    let hidden = name.starts_with('.') || hidden_attribute(&metadata);
 
     let remote = match fs_kind(&metadata) {
         FsKind::Local => false,
@@ -850,10 +902,14 @@ pub fn item_from_entry(
         }
     };
 
+    let hidden = name.starts_with('.') || hidden_attribute(&path, &metadata, remote);
+    // A dataless entry downloads on first read, so it gets the remote treatment below.
+    let skip_content = remote || dataless;
+
     let (mime, icon_handle_grid, icon_handle_list, icon_handle_list_condensed) =
         if metadata.is_dir() {
             // A `.directory` file is one more read per subfolder; skip it on remote mounts.
-            let look = folder_look::look_for(&path, !remote);
+            let look = folder_look::look_for(&path, !skip_content);
             (
                 //TODO: make this a static
                 "inode/directory".parse().unwrap(),
@@ -862,7 +918,7 @@ pub fn item_from_entry(
                 folder_icon_with_look(&path, look.as_ref(), sizes.list_condensed()),
             )
         } else {
-            let mime = mime_for_path(&path, Some(&metadata), remote);
+            let mime = mime_for_path(&path, Some(&metadata), skip_content);
             //TODO: clean this up, implement for trash
             let icon_name_opt = if mime == "application/x-desktop" {
                 is_desktop = true;
@@ -889,7 +945,7 @@ pub fn item_from_entry(
 
     let mut children_opt = None;
     let mut dir_size = DirSize::NotDirectory;
-    if metadata.is_dir() && !remote {
+    if metadata.is_dir() && !skip_content {
         dir_size = DirSize::Calculating(Controller::default());
         //TODO: calculate children in the background (and make it cancellable?)
         match fs::read_dir(&path) {
@@ -919,7 +975,7 @@ pub fn item_from_entry(
         icon_handle_grid,
         icon_handle_list,
         icon_handle_list_condensed,
-        thumbnail_opt: remote.then_some(ItemThumbnail::NotImage),
+        thumbnail_opt: skip_content.then_some(ItemThumbnail::NotImage),
         thumbnail_scale_opt: None,
         button_id: widget::Id::unique(),
         pos_opt: Cell::new(None),
@@ -2229,6 +2285,13 @@ impl ItemThumbnail {
         jobs: usize,
         max_size_mb: u64,
     ) -> Self {
+        // Every path below reads the file, even a cache hit, which checks the source's
+        // dimensions. A dataless file would download, so it keeps its icon.
+        if let ItemMetadata::Path { metadata, .. } = &metadata
+            && is_dataless(metadata)
+        {
+            return Self::NotImage;
+        }
         let thumbnail_cacher =
             ThumbnailCacher::new(path, ThumbnailSize::from_pixel_size(thumbnail_size));
         match thumbnail_cacher.as_ref() {
@@ -3004,7 +3067,10 @@ impl Item {
             }
         }
 
+        // Reading the image header of a dataless file would download it.
+        let dataless = self.file_metadata().is_some_and(|m| is_dataless(&m));
         if let Some(path) = self.path_opt()
+            && !dataless
             && let Ok(img) = image::image_dimensions(path)
         {
             let (width, height) = img;
@@ -3017,6 +3083,10 @@ impl Item {
             && let Some(path) = self.path_opt()
         {
             let control: Element<'_, Message> = match &self.checksums {
+                // Hashing a dataless file would download all of it.
+                ChecksumState::NotCalculated if dataless => {
+                    widget::text::body(fl!("not-downloaded")).into()
+                }
                 ChecksumState::NotCalculated => widget::button::standard(fl!("calculate"))
                     .on_press(Message::CalculateChecksums(path.clone()))
                     .into(),
@@ -3339,6 +3409,30 @@ pub fn is_protected_tree(path: &Path, home: &Path) -> bool {
 }
 
 async fn calculate_dir_size(path: &Path, controller: Controller) -> Result<u64, OperationError> {
+    calculate_dir_size_skipping(path, controller, |entry| {
+        entry.file_type().is_dir() && dataless_path(entry.path())
+    })
+    .await
+}
+
+#[cfg(target_os = "macos")]
+fn dataless_path(path: &Path) -> bool {
+    crate::fs_flags_macos::path_is_dataless(path)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn dataless_path(_path: &Path) -> bool {
+    false
+}
+
+/// Sums file sizes from metadata alone, so a dataless file counts its `st_size` without
+/// being opened. A directory `skip_dir` accepts is not descended into: listing a dataless
+/// directory makes the OS fetch it, so its contents are left out of the total.
+async fn calculate_dir_size_skipping(
+    path: &Path,
+    controller: Controller,
+    skip_dir: impl Fn(&walkdir::DirEntry) -> bool,
+) -> Result<u64, OperationError> {
     let mut total = 0;
     // A protected tree contributes nothing rather than being descended into: the root
     // itself is filtered out when it is one, and WalkDir does not walk past a filtered
@@ -3346,7 +3440,7 @@ async fn calculate_dir_size(path: &Path, controller: Controller) -> Result<u64, 
     let home = crate::home_dir();
     for entry_res in WalkDir::new(path)
         .into_iter()
-        .filter_entry(|entry| !is_protected_tree(entry.path(), &home))
+        .filter_entry(|entry| !is_protected_tree(entry.path(), &home) && !skip_dir(entry))
     {
         controller
             .check()
@@ -3373,6 +3467,11 @@ async fn calculate_dir_size(path: &Path, controller: Controller) -> Result<u64, 
 async fn calculate_checksums(path: &Path) -> Result<FileChecksums, String> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
+        // Hashing a dataless file would download all of it. The details view hides the
+        // button for one; this catches a file evicted since.
+        if fs::metadata(&path).is_ok_and(|m| is_dataless(&m)) {
+            return Err(fl!("not-downloaded"));
+        }
         let mut file = File::open(&path).map_err(|e| e.to_string())?;
         let mut sha256_hasher = Sha256::new();
 
@@ -9207,6 +9306,172 @@ trailer<</Root 1 0 R/Size 4>>\n\
                 thumb
             ),
         }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod fs_flags_tests {
+    use super::*;
+    use std::{ffi::CString, io, os::unix::ffi::OsStrExt as _};
+    use tempfile::TempDir;
+
+    unsafe extern "C" {
+        fn lchflags(path: *const libc::c_char, flags: libc::c_uint) -> libc::c_int;
+    }
+
+    /// Sets `UF_HIDDEN` on `path` itself, not on what a symlink points to.
+    fn set_hidden(path: &Path) {
+        let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c_path` is a valid C string.
+        let ret = unsafe { lchflags(c_path.as_ptr(), libc::UF_HIDDEN) };
+        assert_eq!(ret, 0, "lchflags: {}", io::Error::last_os_error());
+    }
+
+    #[test]
+    fn uf_hidden_marks_item_hidden() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let shown = dir.path().join("shown");
+        let flagged = dir.path().join("flagged");
+        fs::write(&shown, b"x")?;
+        fs::write(&flagged, b"x")?;
+        set_hidden(&flagged);
+
+        assert!(!item_from_path(&shown, IconSizes::default()).unwrap().hidden);
+        assert!(
+            item_from_path(&flagged, IconSizes::default())
+                .unwrap()
+                .hidden
+        );
+        Ok(())
+    }
+
+    /// `/etc` is a hidden symlink to the unhidden `/private/etc`. The link's flag wins.
+    #[test]
+    fn uf_hidden_on_symlink_itself_hides_it() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        fs::create_dir(&target)?;
+        std::os::unix::fs::symlink(&target, &link)?;
+        set_hidden(&link);
+
+        assert!(
+            !item_from_path(&target, IconSizes::default())
+                .unwrap()
+                .hidden
+        );
+        assert!(item_from_path(&link, IconSizes::default()).unwrap().hidden);
+        Ok(())
+    }
+
+    #[test]
+    fn root_is_local() {
+        assert_eq!(fs_kind(&fs::metadata("/").unwrap()), FsKind::Local);
+    }
+
+    /// Listing `/` shows only the Finder folders unless hidden files are shown.
+    #[test]
+    fn root_listing_hides_system_names() {
+        let items = scan_path(&PathBuf::from("/"), IconSizes::default());
+        let shown: Vec<&str> = items
+            .iter()
+            .filter(|item| !item.hidden)
+            .map(|item| item.name.as_str())
+            .collect();
+        for name in ["Applications", "Library", "System", "Users"] {
+            assert!(shown.contains(&name), "/{name} is hidden; shown: {shown:?}");
+        }
+        for name in [
+            "bin", "etc", "private", "sbin", "tmp", "usr", "var", "Volumes",
+        ] {
+            assert!(!shown.contains(&name), "/{name} is shown");
+            assert!(
+                items.iter().any(|item| item.name == name),
+                "/{name} missing from the listing"
+            );
+        }
+    }
+
+    /// A dataless file gets a name-based mime and no thumbnail. The content is a shell
+    /// script, so a content sniff would not answer `image/png`.
+    #[test]
+    fn dataless_file_skips_content_reads() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let path = dir.path().join("photo.png");
+        fs::write(&path, b"#!/bin/sh\necho not a png\n")?;
+        let metadata = fs::metadata(&path)?;
+
+        let item = item_from_entry_with_dataless(
+            path.clone(),
+            "photo.png".into(),
+            metadata.clone(),
+            IconSizes::default(),
+            true,
+        );
+        assert_eq!(item.mime, "image/png");
+        assert!(matches!(item.thumbnail_opt, Some(ItemThumbnail::NotImage)));
+
+        let item = item_from_entry_with_dataless(
+            path,
+            "photo.png".into(),
+            metadata,
+            IconSizes::default(),
+            false,
+        );
+        assert!(item.thumbnail_opt.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn dataless_dir_is_not_listed_or_sized() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub)?;
+        fs::write(sub.join("a"), b"x")?;
+        let metadata = fs::metadata(&sub)?;
+
+        let item = item_from_entry_with_dataless(
+            sub.clone(),
+            "sub".into(),
+            metadata.clone(),
+            IconSizes::default(),
+            true,
+        );
+        assert!(matches!(item.dir_size, DirSize::NotDirectory));
+        assert!(matches!(
+            item.metadata,
+            ItemMetadata::Path {
+                children_opt: None,
+                ..
+            }
+        ));
+
+        let item =
+            item_from_entry_with_dataless(sub, "sub".into(), metadata, IconSizes::default(), false);
+        assert!(matches!(item.dir_size, DirSize::Calculating(_)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dir_size_does_not_descend_skipped_dirs() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        fs::create_dir(dir.path().join("kept"))?;
+        fs::create_dir(dir.path().join("evicted"))?;
+        fs::write(dir.path().join("kept/a"), [0u8; 10])?;
+        fs::write(dir.path().join("evicted/b"), [0u8; 20])?;
+
+        let all = calculate_dir_size(dir.path(), Controller::default())
+            .await
+            .unwrap();
+        assert_eq!(all, 30);
+
+        let skipping = calculate_dir_size_skipping(dir.path(), Controller::default(), |entry| {
+            entry.file_name() == "evicted"
+        })
+        .await
+        .unwrap();
+        assert_eq!(skipping, 10);
         Ok(())
     }
 }
