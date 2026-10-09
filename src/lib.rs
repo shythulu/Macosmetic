@@ -23,6 +23,8 @@ mod context_action;
 pub mod dialog;
 mod folder_appearance;
 pub mod folder_look;
+#[cfg(target_os = "macos")]
+mod fs_flags_macos;
 mod gesture;
 #[cfg(target_os = "macos")]
 pub(crate) mod gesture_macos;

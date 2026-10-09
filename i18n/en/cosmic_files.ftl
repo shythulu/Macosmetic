@@ -314,6 +314,7 @@ item-accessed = Accessed: {$accessed}
 calculating = Calculating...
 checksum = {$kind} checksum
 calculate = Calculate
+not-downloaded = Not downloaded
 error = Error
 
 ## Customize folder
