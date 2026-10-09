@@ -30,7 +30,7 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::cmp::Ordering;
 #[cfg(not(target_os = "macos"))]
 use std::cmp::Reverse;
@@ -856,6 +856,7 @@ pub fn item_from_gvfs_info(path: PathBuf, file_info: gio::FileInfo, sizes: IconS
         checksums: ChecksumState::default(),
         kind_opt: None,
         date_added_opt: None,
+        get_info: OnceCell::new(),
     }
 }
 
@@ -1013,6 +1014,7 @@ fn item_from_entry_with_dataless(
         checksums: ChecksumState::default(),
         kind_opt,
         date_added_opt,
+        get_info: OnceCell::new(),
     }
 }
 
@@ -1077,6 +1079,7 @@ pub fn item_from_denied_entry(path: PathBuf, name: String, is_dir: bool, sizes: 
         checksums: ChecksumState::default(),
         kind_opt: None,
         date_added_opt: None,
+        get_info: OnceCell::new(),
     }
 }
 
@@ -1146,6 +1149,7 @@ pub fn item_from_trash_entry(
         checksums: ChecksumState::default(),
         kind_opt: None,
         date_added_opt: None,
+        get_info: OnceCell::new(),
     }
 }
 
@@ -1674,6 +1678,7 @@ pub fn scan_desktop(
             checksums: ChecksumState::default(),
             kind_opt: None,
             date_added_opt: None,
+            get_info: OnceCell::new(),
         });
     }
 
@@ -2926,6 +2931,8 @@ pub struct Item {
     pub kind_opt: Option<ItemKind>,
     /// When the item was put in its folder (macOS `NSURLAddedToDirectoryDateKey`).
     pub date_added_opt: Option<SystemTime>,
+    /// Get Info fields, read the first time the details pane shows this item.
+    pub get_info: OnceCell<GetInfo>,
 }
 
 /// What an item is, as the platform names it.
@@ -2935,6 +2942,64 @@ pub struct ItemKind {
     pub type_id: String,
     /// The localised name to show, for example "PDF document".
     pub description: String,
+}
+
+/// The Get Info fields of the details pane that are not part of the scanned metadata.
+///
+/// They cost a filesystem or Foundation call each, so they are read for the one item the details
+/// pane shows rather than for every item in a directory.
+#[derive(Clone, Debug, Default)]
+pub struct GetInfo {
+    /// Finder's localized Kind, such as "PDF document". macOS only.
+    pub kind: Option<String>,
+    /// The folder the item is in, with the home folder written as `~`.
+    pub location: Option<String>,
+    /// When the item was put in its folder. macOS only.
+    pub added: Option<SystemTime>,
+    /// An application bundle's version. macOS only.
+    pub version: Option<String>,
+}
+
+impl GetInfo {
+    pub fn read(path: &Path) -> Self {
+        let location = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(|parent| abbreviate_home(parent, &crate::home_dir()));
+        #[cfg(target_os = "macos")]
+        {
+            use crate::url_values_macos;
+            let (kind, added) = url_values_macos::kind_and_date_added(path);
+            Self {
+                kind: kind.map(|kind| kind.description),
+                location,
+                added,
+                version: url_values_macos::app_version(path),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self {
+                location,
+                ..Self::default()
+            }
+        }
+    }
+}
+
+/// `path` with a leading `home` written as `~`, the way Finder and shells show it.
+pub fn abbreviate_home(path: &Path, home: &Path) -> String {
+    // A home of `/` is the fallback for a missing home folder, not a real one.
+    if home.parent().is_some()
+        && let Ok(rest) = path.strip_prefix(home)
+    {
+        return if rest.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", rest.display())
+        };
+    }
+    path.display().to_string()
 }
 
 impl Item {
@@ -3136,6 +3201,12 @@ impl Item {
 
         let mut details = widget::column::with_capacity(8).spacing(space_xxxs);
         details = details.push(widget::selectable_text::heading(self.name.clone()));
+        let get_info = self
+            .path_opt()
+            .map(|path| self.get_info.get_or_init(|| GetInfo::read(path)));
+        if let Some(kind) = get_info.and_then(|info| info.kind.as_deref()) {
+            details = details.push(widget::text::body(fl!("item-kind", kind = kind)));
+        }
         details = details.push(widget::text::body(fl!(
             "type",
             mime = self.mime.to_string()
@@ -3188,6 +3259,21 @@ impl Item {
                 )));
             }
 
+            if let Some(info) = get_info {
+                if let Some(location) = &info.location {
+                    details = details.push(widget::selectable_text::body(fl!(
+                        "item-where",
+                        path = location.as_str()
+                    )));
+                }
+                if let Some(version) = &info.version {
+                    details = details.push(widget::selectable_text::body(fl!(
+                        "item-version",
+                        version = version.as_str()
+                    )));
+                }
+            }
+
             let date_time_formatter = date_time_formatter(military_time);
             let time_formatter = time_formatter(military_time);
 
@@ -3209,6 +3295,13 @@ impl Item {
                 details = details.push(widget::selectable_text::body(fl!(
                     "item-accessed",
                     accessed = format_time(time, &date_time_formatter, &time_formatter).to_string()
+                )));
+            }
+
+            if let Some(time) = get_info.and_then(|info| info.added) {
+                details = details.push(widget::selectable_text::body(fl!(
+                    "item-added",
+                    added = format_time(time, &date_time_formatter, &time_formatter).to_string()
                 )));
             }
 
@@ -8664,6 +8757,48 @@ mod tests {
         eq_path_item, filter_dirs, read_dir_sorted, simple_fs, tab_click_new,
     };
     use crate::config::{IconSizes, TabConfig, ThumbCfg};
+
+    #[test]
+    fn where_abbreviates_the_home_folder() {
+        use super::abbreviate_home;
+        let home = Path::new("/Users/someone");
+        assert_eq!(
+            abbreviate_home(Path::new("/Users/someone/Documents/Work"), home),
+            "~/Documents/Work"
+        );
+        assert_eq!(abbreviate_home(home, home), "~");
+        assert_eq!(
+            abbreviate_home(Path::new("/Users/someoneelse/Documents"), home),
+            "/Users/someoneelse/Documents"
+        );
+        assert_eq!(
+            abbreviate_home(Path::new("/Applications"), home),
+            "/Applications"
+        );
+        // A home of `/` is a fallback, not a real home: every path would become `~/...`.
+        assert_eq!(
+            abbreviate_home(Path::new("/Applications"), Path::new("/")),
+            "/Applications"
+        );
+    }
+
+    #[test]
+    fn get_info_reads_where_from_the_parent_folder() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("file.txt");
+        fs::write(&path, b"hello").unwrap();
+        let info = super::GetInfo::read(&path);
+        assert_eq!(
+            info.location.as_deref(),
+            Some(dir.path().display().to_string().as_str())
+        );
+        #[cfg(target_os = "macos")]
+        {
+            assert!(info.kind.is_some_and(|kind| !kind.is_empty()));
+            assert!(info.added.is_some());
+            assert_eq!(info.version, None);
+        }
+    }
 
     // Boilerplate for tab tests. Checks if simulated clicks selected items.
     fn tab_selects_item(

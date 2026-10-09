@@ -8,7 +8,8 @@
 //! (`NSURLAddedToDirectoryDateKey`). Only Launch Services can answer these, because they depend
 //! on which apps are installed and on extended attributes `stat` does not show.
 //!
-//! [`resource_values`] is the one entry point. The typed readers below it ask for the keys a
+//! [`resource_values`] is the one entry point for resource values; [`app_version`] is the one
+//! `NSBundle` read, kept here because it is the same "ask Foundation about a path" shape. The typed readers below it ask for the keys a
 //! feature needs, in one call per file, and pick the values out of the dictionary it returns.
 //!
 //! Everything here is Foundation, not AppKit, so it is safe to call from any thread, including
@@ -20,9 +21,9 @@ use std::time::{Duration, SystemTime};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
-    NSArray, NSDate, NSDictionary, NSNumber, NSString, NSURL, NSURLAddedToDirectoryDateKey,
-    NSURLContentTypeKey, NSURLIsPackageKey, NSURLLocalizedTypeDescriptionKey,
-    NSURLResourceKey,
+    NSArray, NSBundle, NSDate, NSDictionary, NSNumber, NSString, NSURL,
+    NSURLAddedToDirectoryDateKey, NSURLContentTypeKey, NSURLIsPackageKey,
+    NSURLLocalizedTypeDescriptionKey, NSURLResourceKey,
 };
 use objc2_uniform_type_identifiers::UTType;
 
@@ -142,6 +143,20 @@ fn kind_from(
     })
 }
 
+/// The marketing version (`CFBundleShortVersionString`) of an application bundle.
+pub(crate) fn app_version(path: &Path) -> Option<String> {
+    if path.extension().is_none_or(|ext| ext != "app") || !path.is_dir() {
+        return None;
+    }
+    autoreleasepool(|_| {
+        let url = NSURL::from_file_path(path)?;
+        let bundle = NSBundle::bundleWithURL(&url)?;
+        let version =
+            bundle.objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))?;
+        string_from(&version)
+    })
+}
+
 /// A non-empty `NSString` value as a Rust string.
 fn string_from(value: &AnyObject) -> Option<String> {
     let string = value.downcast_ref::<NSString>()?.to_string();
@@ -255,6 +270,26 @@ mod tests {
         let (kind, date_added) = kind_and_date_added(Path::new("/nonexistent/macosmetic/x.pdf"));
         assert_eq!(kind, None);
         assert_eq!(date_added, None);
+    }
+
+    #[test]
+    fn app_version_reads_the_bundle_info_plist() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Sample.app");
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>org.example.get-info-test</string>
+<key>CFBundleShortVersionString</key><string>1.2.3</string>
+</dict></plist>
+"#,
+        )
+        .unwrap();
+        assert_eq!(app_version(&app).as_deref(), Some("1.2.3"));
+        assert_eq!(app_version(dir.path()), None);
     }
 
     #[test]

@@ -250,6 +250,7 @@ fn network_scan(uri: &str, sizes: IconSizes) -> Result<Vec<tab::Item>, String> {
             checksums: ChecksumState::default(),
             kind_opt: None,
             date_added_opt: None,
+            get_info: Default::default(),
         });
     }
     Ok(items)

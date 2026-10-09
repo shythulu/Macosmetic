@@ -173,6 +173,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "block2",
     # Resource values read at scan time (src/url_values_macos.rs).
     "NSArray",
+    # Get Info: an app's version (src/url_values_macos.rs).
+    "NSBundle",
     "NSData",
     "NSDate",
     "NSDictionary",
