@@ -222,6 +222,15 @@ pub fn context_menu<'a>(
                 } else {
                     children.push(menu_item(fl!("copy"), Action::Copy));
                 }
+                if selected_mount_point == 0 && !any_trash_item {
+                    children.push(menu_item(fl!("duplicate"), Action::Duplicate));
+                    if selected >= 2
+                        && matches!(tab.location, Location::Path(..) | Location::Desktop(..))
+                    {
+                        let label = fl!("new-folder-with-selection", items = selected);
+                        children.push(menu_item(label, Action::NewFolderWithSelection));
+                    }
+                }
                 if selected_mount_point == 0 {
                     children.push(menu_item(fl!("move-to"), Action::MoveTo));
                 }
@@ -667,6 +676,11 @@ pub fn menu_bar<'a>(
                     vec![
                         menu_button_optional(fl!("cut"), Action::Cut, selected > 0),
                         menu_button_optional(fl!("copy"), Action::Copy, selected > 0),
+                        menu_button_optional(
+                            fl!("duplicate"),
+                            Action::Duplicate,
+                            selected > 0 && !in_trash,
+                        ),
                         menu_button_optional(fl!("move-to"), Action::MoveTo, selected > 0),
                         menu_button_optional(fl!("copy-to"), Action::CopyTo, selected > 0),
                         menu_button_optional(fl!("paste"), Action::Paste, can_paste),

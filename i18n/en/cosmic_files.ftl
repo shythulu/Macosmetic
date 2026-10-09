@@ -227,6 +227,10 @@ compressed = Compressed {$items} {$items ->
         *[other] items
     } from "{$from}" to "{$to}"
 copy_noun = Copy
+# The word Duplicate adds to a name, as Finder does: "a copy.txt", "a copy 2.txt"
+duplicate-name-suffix = copy
+# Finder's name for the folder New Folder with Selection creates
+new-folder-with-items = New Folder With Items
 pasted-image = Pasted Image
 pasted-text = Pasted Text
 pasted-video = Pasted Video
@@ -406,6 +410,11 @@ edit = Edit
 cut = Cut
 copy = Copy
 copy-path = Copy path
+duplicate = Duplicate
+new-folder-with-selection = New folder with selection ({$items} {$items ->
+        [one] item
+        *[other] items
+    })
 paste = Paste
 select-all = Select all
 

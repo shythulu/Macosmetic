@@ -93,41 +93,53 @@ async fn copy_or_move(
     msg_tx: &Arc<TokioMutex<Sender<Message>>>,
     controller: Controller,
 ) -> Result<OperationSelection, OperationError> {
+    log::info!(
+        "{} {:?} to {}",
+        match method {
+            Method::Copy => "Copy",
+            Method::Move { .. } => "Move",
+        },
+        paths,
+        to.display()
+    );
+
+    // Handle duplicate file names by renaming paths
+    let from_to_pairs = paths
+        .into_iter()
+        .filter_map(|from| {
+            if matches!(from.parent(), Some(parent) if parent == to)
+                && matches!(method, Method::Copy)
+            {
+                // `from`'s parent is equal to `to` which means we're copying to the same
+                // directory (duplicating files)
+                let to = copy_unique_path(&from, &to);
+                Some((from, to))
+            } else if let Some(name) = from.file_name() {
+                let to = to.join(name);
+                Some((from, to))
+            } else {
+                //TODO: how to handle from missing file name?
+                None
+            }
+        })
+        .collect();
+
+    transfer(from_to_pairs, method, msg_tx, controller).await
+}
+
+/// Copy or move each `(from, to)` pair, with progress, cancel and the replace dialog.
+async fn transfer(
+    from_to_pairs: Vec<(PathBuf, PathBuf)>,
+    method: Method,
+    msg_tx: &Arc<TokioMutex<Sender<Message>>>,
+    controller: Controller,
+) -> Result<OperationSelection, OperationError> {
     let msg_tx = msg_tx.clone();
     let controller_c = controller.clone();
 
     compio::runtime::spawn(async move {
         let controller = controller_c;
-        log::info!(
-            "{} {:?} to {}",
-            match method {
-                Method::Copy => "Copy",
-                Method::Move { .. } => "Move",
-            },
-            paths,
-            to.display()
-        );
-
-        // Handle duplicate file names by renaming paths
-        let from_to_pairs_iter = paths
-            .into_iter()
-            .zip(std::iter::repeat(to.as_path()))
-            .filter_map(|(from, to)| {
-                if matches!(from.parent(), Some(parent) if parent == to)
-                    && matches!(method, Method::Copy)
-                {
-                    // `from`'s parent is equal to `to` which means we're copying to the same
-                    // directory (duplicating files)
-                    let to = copy_unique_path(&from, to);
-                    Some((from, to))
-                } else if let Some(name) = from.file_name() {
-                    let to = to.join(name);
-                    Some((from, to))
-                } else {
-                    //TODO: how to handle from missing file name?
-                    None
-                }
-            });
+        let from_to_pairs_iter = from_to_pairs.into_iter();
 
         // Attempt quick and simple renames
         //TODO: allow rename to be used for directories in recursive context?
@@ -364,6 +376,10 @@ pub enum Operation {
     Delete {
         paths: Vec<PathBuf>,
     },
+    /// Copy each item next to itself with Finder's " copy" name
+    Duplicate {
+        paths: Vec<PathBuf>,
+    },
     /// Delete a path from the trash
     DeleteTrash {
         items: Vec<trash::TrashItem>,
@@ -387,6 +403,11 @@ pub enum Operation {
     },
     NewFolder {
         path: PathBuf,
+    },
+    /// Create the folder `path` and move `paths` into it
+    NewFolderWithItems {
+        path: PathBuf,
+        paths: Vec<PathBuf>,
     },
     /// Permanently delete items, skipping the trash
     PermanentlyDelete {
@@ -494,6 +515,13 @@ impl Operation {
                 to = file_name(to),
                 progress = progress()
             ),
+            Self::Duplicate { paths } => fl!(
+                "copying",
+                items = paths.len(),
+                from = paths_parent_name(paths),
+                to = paths_parent_name(paths),
+                progress = progress()
+            ),
             Self::Delete { paths } => fl!(
                 "moving",
                 items = paths.len(),
@@ -528,7 +556,7 @@ impl Operation {
                 name = file_name(path),
                 parent = parent_name(path)
             ),
-            Self::NewFolder { path } => fl!(
+            Self::NewFolder { path } | Self::NewFolderWithItems { path, .. } => fl!(
                 "creating",
                 name = file_name(path),
                 parent = parent_name(path)
@@ -566,6 +594,12 @@ impl Operation {
                 from = paths_parent_name(paths),
                 to = file_name(to)
             ),
+            Self::Duplicate { paths } => fl!(
+                "copied",
+                items = paths.len(),
+                from = paths_parent_name(paths),
+                to = paths_parent_name(paths)
+            ),
             Self::Delete { paths } => fl!(
                 "moved",
                 items = paths.len(),
@@ -595,7 +629,7 @@ impl Operation {
                 name = file_name(path),
                 parent = parent_name(path)
             ),
-            Self::NewFolder { path } => fl!(
+            Self::NewFolder { path } | Self::NewFolderWithItems { path, .. } => fl!(
                 "created",
                 name = file_name(path),
                 parent = parent_name(path)
@@ -624,9 +658,11 @@ impl Operation {
             | Self::Copy { .. }
             | Self::Delete { .. }
             | Self::DeleteTrash { .. }
+            | Self::Duplicate { .. }
             | Self::EmptyTrash
             | Self::Extract { .. }
             | Self::Move { .. }
+            | Self::NewFolderWithItems { .. }
             | Self::PermanentlyDelete { .. }
             | Self::Restore { .. } => true,
             Self::NewFile { .. }
@@ -845,6 +881,39 @@ impl Operation {
             }
             Self::Copy { paths, to } => {
                 copy_or_move(paths, to, Method::Copy, msg_tx, controller).await
+            }
+            Self::Duplicate { paths } => {
+                let mut reserved = std::collections::HashSet::new();
+                let from_to_pairs = paths
+                    .into_iter()
+                    .filter_map(|from| {
+                        let to = crate::duplicate::duplicate_path(&from, &reserved)?;
+                        reserved.insert(to.clone());
+                        Some((from, to))
+                    })
+                    .collect();
+                transfer(from_to_pairs, Method::Copy, msg_tx, controller).await
+            }
+            Self::NewFolderWithItems { path, paths } => {
+                // The existing operations, run in sequence under one controller.
+                Box::pin(
+                    Self::NewFolder { path: path.clone() }.perform(msg_tx, controller.clone()),
+                )
+                .await?;
+                Box::pin(
+                    Self::Move {
+                        paths: paths.clone(),
+                        to: path.clone(),
+                        cross_device_copy: false,
+                    }
+                    .perform(msg_tx, controller),
+                )
+                .await?;
+                // The moved items were the selection; ignoring them lets the folder take over.
+                Ok(OperationSelection {
+                    ignored: paths,
+                    selected: vec![path],
+                })
             }
             Self::Delete { paths } => {
                 let total = paths.len();
@@ -1295,19 +1364,21 @@ mod tests {
         paths: Vec<PathBuf>,
         to: PathBuf,
     ) -> Result<OperationSelection, OperationError> {
+        perform_operation(Operation::Copy { paths, to }).await
+    }
+
+    /// Run any operation, answering replace requests with Cancel.
+    pub async fn perform_operation(
+        operation: Operation,
+    ) -> Result<OperationSelection, OperationError> {
         let id = fastrand::u64(0..u64::MAX);
         let (tx, mut rx) = mpsc::channel(1);
-        let paths_clone = paths.clone();
-        let to_clone = to.clone();
 
         // Wrap this into its own future so that it may be polled concurerntly with the message handler.
         let handle_copy = async move {
-            Operation::Copy {
-                paths: paths_clone,
-                to: to_clone,
-            }
-            .perform(&sync::Mutex::new(tx).into(), Controller::default())
-            .await
+            operation
+                .perform(&sync::Mutex::new(tx).into(), Controller::default())
+                .await
         };
 
         // Concurrently handling messages will prevent the mpsc channel from blocking when full.
@@ -1497,6 +1568,53 @@ mod tests {
 
         assert!(file_path.exists(), "Original file should still exist");
         assert!(expected.exists(), "File should have been copied");
+
+        Ok(())
+    }
+
+    #[test(compio::test)]
+    async fn duplicate_twice_uses_finder_names() -> io::Result<()> {
+        let fs = empty_fs()?;
+        let path = fs.path();
+        let original = path.join("a.txt");
+        fs::write(&original, b"contents")?;
+
+        for expected in ["a copy.txt", "a copy 2.txt"] {
+            let op_sel = perform_operation(Operation::Duplicate {
+                paths: vec![original.clone()],
+            })
+            .await
+            .expect("Duplicate should have succeeded");
+            let expected = path.join(expected);
+            assert_eq!(fs::read(&expected)?, b"contents");
+            assert_eq!(op_sel.selected, vec![expected], "the copy is selected");
+        }
+        assert!(original.exists(), "Original file should still exist");
+
+        Ok(())
+    }
+
+    #[test(compio::test)]
+    async fn new_folder_with_items_moves_the_selection() -> io::Result<()> {
+        let fs = empty_fs()?;
+        let path = fs.path();
+        let a = path.join("a.txt");
+        let b = path.join("b");
+        fs::write(&a, b"a")?;
+        fs::create_dir(&b)?;
+        let folder = path.join("New Folder With Items");
+
+        let op_sel = perform_operation(Operation::NewFolderWithItems {
+            path: folder.clone(),
+            paths: vec![a.clone(), b.clone()],
+        })
+        .await
+        .expect("New Folder with Selection should have succeeded");
+
+        assert!(!a.exists() && !b.exists(), "items left their folder");
+        assert!(folder.join("a.txt").is_file());
+        assert!(folder.join("b").is_dir());
+        assert_eq!(op_sel.selected, vec![folder]);
 
         Ok(())
     }

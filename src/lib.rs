@@ -21,6 +21,7 @@ pub mod clipboard;
 pub mod config;
 mod context_action;
 pub mod dialog;
+mod duplicate;
 mod folder_appearance;
 pub mod folder_look;
 mod gesture;

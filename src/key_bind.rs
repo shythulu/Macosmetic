@@ -198,6 +198,14 @@ pub fn cmd_key_binds(mode: &tab::Mode) -> HashMap<KeyBind, Action> {
         // Finder's Copy as Pathname.
         bind!([Super, Alt], Key::Character("c".into()), CopyPath);
         bind!([Super], Key::Character("x".into()), Cut);
+        // Finder's File > Duplicate and New Folder with Selection. Elsewhere Ctrl+D adds to the
+        // sidebar, so neither has a default key there.
+        bind!([Super], Key::Character("d".into()), Duplicate);
+        bind!(
+            [Super, Ctrl],
+            Key::Character("n".into()),
+            NewFolderWithSelection
+        );
         // The key labelled Delete on a Mac keyboard reports Backspace; the one on a full size
         // keyboard reports Delete. Both trash, as they do in Finder. Neither is bound without a
         // modifier: Finder does not trash on Delete alone.
@@ -660,6 +668,7 @@ unit_actions![
     CosmicSettingsWallpaper,
     DesktopViewOptions,
     Delete,
+    Duplicate,
     EditHistory,
     EditLocation,
     Eject,
@@ -680,6 +689,7 @@ unit_actions![
     MoveTo,
     NewFile,
     NewFolder,
+    NewFolderWithSelection,
     Open,
     OpenInNewTab,
     OpenInNewWindow,
@@ -1107,8 +1117,8 @@ mod tests {
             assert_eq!(&action.config_name(), name);
             assert_eq!(Action::from_config_name(name), Some(*action));
         }
-        // 67 payload-free variants plus the four parameterized ones below.
-        assert_eq!(UNIT_ACTIONS.len(), 67);
+        // 69 payload-free variants plus the four parameterized ones below.
+        assert_eq!(UNIT_ACTIONS.len(), 69);
     }
 
     #[test]
@@ -1234,6 +1244,8 @@ mod tests {
             ("Cmd+c", Action::Copy),
             ("Cmd+x", Action::Cut),
             ("Cmd+v", Action::Paste),
+            ("Cmd+d", Action::Duplicate),
+            ("Ctrl+Cmd+n", Action::NewFolderWithSelection),
             ("Cmd+a", Action::SelectAll),
             ("Cmd+q", Action::Quit),
             ("Cmd+h", Action::Hide),
