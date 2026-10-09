@@ -21,19 +21,31 @@ app, no drop from Finder and no drag to another app ever reached a widget.
 | `src/lib.rs` | macOS platform module path is now `platform/macos/mod.rs`. |
 | `src/platform/macos/mod.rs` | the old stub, now a real `DndProvider`: sender storage, destination registry, `start_dnd`, `set_action`, `peek_offer`. |
 | `src/platform/macos/state.rs` | new. Pure state machine with unit tests. Mirrors the event sequence of `smithay-clipboard/src/dnd/state.rs`. |
-| `src/platform/macos/appkit.rs` | new. `NSEvent` local monitor that drives in-process drags; view geometry; `NSDraggingDestination` methods for drops from other apps. |
+| `src/platform/macos/appkit.rs` | new. `NSEvent` local monitor that drives in-process drags without file URLs (tab reordering); view geometry. |
+| `src/platform/macos/destination.rs` | new. Runtime subclass of winit's content view with the `NSDraggingDestination` methods, so file drags from any app, this one included, arrive as a `text/uri-list` offer. |
+| `src/platform/macos/source.rs` | new. `NSDraggingSession` for drags that carry file URLs, with iced's rendered icon as the drag image, so other apps can take the files. |
+| `libcosmic-init-dnd.patch` | the one-line libcosmic change this backend needs (below). |
 
 Everything else is byte-for-byte upstream. Linux, Windows and the other
 platform files are untouched.
+
+## How a drag flows
+
+| Drag | Path |
+|---|---|
+| Files, started here | `source.rs` starts an AppKit session. Our own windows receive it through `destination.rs` like any other app's drag. Session end produces the source events. |
+| Anything without file URLs, started here | `appkit.rs` pointer monitor feeds `state.rs` directly; data comes from the widget's content. |
+| Files from another app | `destination.rs`; data is a `text/uri-list` built from the pasteboard's file URLs. Option copies, Command moves, default follows the destination's preferred action. |
 
 ## Requirement on libcosmic
 
 `iced/winit/src/clipboard.rs` in libcosmic calls `init_dnd` only under
 `#[cfg(wayland_platform)]`. Without that call this backend has no channel to
 iced and logs "iced never called init_dnd on this platform". The
-`shythulu/libcosmic` branch `macosmetic` needs that `cfg` line removed (one
-line, `Clipboard::connect`). See `docs/` notes in the Macosmetic repo and
-`/Users/shylo/dev/macosmetic-research/09-dnd-spike.md`.
+`shythulu/libcosmic` branch `macosmetic` needs that `cfg` line removed:
+`libcosmic-init-dnd.patch` in this directory is the diff. Until it lands and
+the lock moves to it, drag and drop stays dead on macOS even with this
+backend built in.
 
 ## Tests
 

@@ -6,15 +6,19 @@
 //! | File | Role |
 //! |---|---|
 //! | `state.rs` | pure state machine: destination rectangles, hit testing, the event sequence iced's widgets expect |
-//! | `appkit.rs` | AppKit glue: pointer monitor for in-process drags, view geometry, `NSDraggingDestination` methods for drops from other apps |
+//! | `appkit.rs` | pointer monitor for in-process drags without file URLs, view geometry |
+//! | `destination.rs` | `NSDraggingDestination` methods on winit's content view: drops from any app, this one included |
+//! | `source.rs` | `NSDraggingSession` for file drags started here, so other apps can take them |
 //!
 //! Every `DndProvider` call arrives on the main thread (iced's event loop is
 //! the main thread on macOS). The shared state sits behind a `Mutex` because
 //! the trait takes `&self` and the AppKit callbacks need the same state.
 
-use crate::ClipboardProvider;
 use crate::dnd::DndProvider;
-use dnd::{DndAction, DndDestinationRectangle, DndEvent, DndSurface, Icon, Sender};
+use crate::ClipboardProvider;
+use dnd::{
+    DndAction, DndDestinationRectangle, DndEvent, DndSurface, Icon, Sender,
+};
 use mime::{AllowedMimeTypes, AsMimeTypes};
 use objc2::MainThreadMarker;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
@@ -26,6 +30,7 @@ use std::{
 
 mod appkit;
 mod destination;
+mod source;
 pub mod state;
 
 use state::{Dnd, Offer, SurfaceKey};
@@ -85,7 +90,9 @@ pub fn connect<W: HasDisplayHandle + ?Sized>(
 /// The `NSView` pointer behind a surface, which keys the destination registry.
 pub(crate) fn surface_key(surface: &DndSurface) -> Option<SurfaceKey> {
     match surface.0.window_handle().ok()?.as_raw() {
-        RawWindowHandle::AppKit(handle) => Some(handle.ns_view.as_ptr() as usize),
+        RawWindowHandle::AppKit(handle) => {
+            Some(handle.ns_view.as_ptr() as usize)
+        }
         other => {
             log::warn!(target: LOG, "not an AppKit window handle: {other:?}");
             None
@@ -120,14 +127,25 @@ impl DndProvider for Clipboard {
             "start_dnd internal={internal} actions={actions:?} mimes={mimes:?} icon={}",
             icon_surface.is_some()
         );
-        let source_key = surface_key(&source_surface);
-        let events = self.shared.dnd.lock().unwrap().begin(
-            Offer::Internal(Box::new(content)),
-            actions,
-            true,
-        );
+        let offer = Offer::Internal(Box::new(content));
+        // Files go through an AppKit session so other apps can take them.
+        // Anything else (tab reordering) stays in process.
+        if let Some(key) = surface_key(&source_surface) {
+            if source::begin_session(
+                &self.shared,
+                mtm,
+                key,
+                &offer,
+                icon_surface.as_ref(),
+                actions,
+            ) {
+                return;
+            }
+        }
+        let events =
+            self.shared.dnd.lock().unwrap().begin(offer, actions, true);
         self.shared.emit(events);
-        appkit::begin_internal_drag(&self.shared, mtm, source_key, icon_surface);
+        appkit::begin_internal_drag(&self.shared, mtm);
     }
 
     fn end_dnd(&self) {
@@ -152,7 +170,13 @@ impl DndProvider for Clipboard {
             rectangles.len()
         );
         let first_time = !rectangles.is_empty()
-            && !self.shared.dnd.lock().unwrap().surface_keys().any(|k| k == key);
+            && !self
+                .shared
+                .dnd
+                .lock()
+                .unwrap()
+                .surface_keys()
+                .any(|k| k == key);
         self.shared
             .dnd
             .lock()
@@ -167,7 +191,8 @@ impl DndProvider for Clipboard {
 
     fn set_action(&self, action: DndAction) {
         log::debug!(target: LOG, "set_action {action:?}");
-        let (_outcome, events) = self.shared.dnd.lock().unwrap().set_action(action);
+        let (_outcome, events) =
+            self.shared.dnd.lock().unwrap().set_action(action);
         self.shared.emit(events);
     }
 
@@ -179,7 +204,8 @@ impl DndProvider for Clipboard {
             Some(m) => Some(m.into_owned()),
             None => {
                 // Pick the first type the caller accepts that the offer has.
-                let offered = self.shared.dnd.lock().unwrap().offer_mime_types();
+                let offered =
+                    self.shared.dnd.lock().unwrap().offer_mime_types();
                 D::allowed()
                     .iter()
                     .find(|m| offered.iter().any(|o| o == *m))

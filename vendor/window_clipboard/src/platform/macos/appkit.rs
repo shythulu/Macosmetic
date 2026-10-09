@@ -12,7 +12,7 @@
 use super::state::{Modifiers, SurfaceKey};
 use super::{Shared, LOG};
 use block2::RcBlock;
-use dnd::Icon;
+
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
@@ -55,6 +55,9 @@ impl<T> MainThreadCell<T> {
 #[derive(Default)]
 pub(crate) struct Hooks {
     monitor: Mutex<Option<MainThreadCell<Retained<AnyObject>>>>,
+    /// The `NSDraggingSource` of the session in flight, kept alive for it.
+    pub(crate) drag_source:
+        Mutex<Option<MainThreadCell<Retained<super::source::DragSource>>>>,
 }
 
 impl Hooks {
@@ -116,19 +119,15 @@ pub(crate) fn sample_at(
 }
 
 fn track(shared: &Shared, mtm: MainThreadMarker, mods: Modifiers) {
-    let keys: Vec<SurfaceKey> = shared.dnd.lock().unwrap().surface_keys().collect();
+    let keys: Vec<SurfaceKey> =
+        shared.dnd.lock().unwrap().surface_keys().collect();
     let at = sample_at(mtm, NSEvent::mouseLocation(), &keys);
     let events = shared.dnd.lock().unwrap().pointer(at, mods);
     shared.emit(events);
 }
 
 /// Start the loopback for a drag this process began.
-pub(crate) fn begin_internal_drag(
-    shared: &Arc<Shared>,
-    mtm: MainThreadMarker,
-    _source_key: Option<SurfaceKey>,
-    _icon: Option<Icon>,
-) {
+pub(crate) fn begin_internal_drag(shared: &Arc<Shared>, mtm: MainThreadMarker) {
     install_monitor(shared, mtm);
     track(shared, mtm, modifiers(NSEvent::modifierFlags_class()));
 }
@@ -136,57 +135,68 @@ pub(crate) fn begin_internal_drag(
 fn install_monitor(shared: &Arc<Shared>, mtm: MainThreadMarker) {
     shared.hooks.remove_monitor(mtm);
     let weak: Weak<Shared> = Arc::downgrade(shared);
-    let handler = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-        let pass_through = event.as_ptr();
-        let Some(shared) = weak.upgrade() else {
-            return pass_through;
-        };
-        let Some(mtm) = MainThreadMarker::new() else {
-            return pass_through;
-        };
-        // SAFETY: AppKit hands the monitor a valid event for the call.
-        let event_ref: &NSEvent = unsafe { event.as_ref() };
-        let mods = modifiers(event_ref.modifierFlags());
-        match event_ref.r#type() {
-            NSEventType::LeftMouseDragged | NSEventType::FlagsChanged => {
-                track(&shared, mtm, mods);
+    let handler =
+        RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            let pass_through = event.as_ptr();
+            let Some(shared) = weak.upgrade() else {
+                return pass_through;
+            };
+            let Some(mtm) = MainThreadMarker::new() else {
+                return pass_through;
+            };
+            // SAFETY: AppKit hands the monitor a valid event for the call.
+            let event_ref: &NSEvent = unsafe { event.as_ref() };
+            let mods = modifiers(event_ref.modifierFlags());
+            match event_ref.r#type() {
+                NSEventType::LeftMouseDragged | NSEventType::FlagsChanged => {
+                    track(&shared, mtm, mods);
+                }
+                NSEventType::LeftMouseUp => {
+                    track(&shared, mtm, mods);
+                    let (outcome, events) =
+                        shared.dnd.lock().unwrap().release();
+                    log::debug!(target: LOG, "loopback drop: {outcome:?}");
+                    shared.emit(events);
+                    shared.hooks.remove_monitor(mtm);
+                }
+                NSEventType::KeyDown
+                    if event_ref.keyCode() == ESCAPE_KEY_CODE =>
+                {
+                    let events = shared.dnd.lock().unwrap().cancel();
+                    log::debug!(target: LOG, "loopback cancelled with Escape");
+                    shared.emit(events);
+                    shared.hooks.remove_monitor(mtm);
+                    return std::ptr::null_mut();
+                }
+                _ => {}
             }
-            NSEventType::LeftMouseUp => {
-                track(&shared, mtm, mods);
-                let (outcome, events) = shared.dnd.lock().unwrap().release();
-                log::debug!(target: LOG, "loopback drop: {outcome:?}");
-                shared.emit(events);
-                shared.hooks.remove_monitor(mtm);
-            }
-            NSEventType::KeyDown if event_ref.keyCode() == ESCAPE_KEY_CODE => {
-                let events = shared.dnd.lock().unwrap().cancel();
-                log::debug!(target: LOG, "loopback cancelled with Escape");
-                shared.emit(events);
-                shared.hooks.remove_monitor(mtm);
-                return std::ptr::null_mut();
-            }
-            _ => {}
-        }
-        pass_through
-    });
+            pass_through
+        });
     let mask = NSEventMask::LeftMouseDragged
         | NSEventMask::LeftMouseUp
         | NSEventMask::FlagsChanged
         | NSEventMask::KeyDown;
     // SAFETY: the block returns the event it was given, or null for Escape.
-    let monitor =
-        unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &handler) };
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &handler)
+    };
     match monitor {
         Some(monitor) => {
             *shared.hooks.monitor.lock().unwrap() =
                 Some(MainThreadCell::new(monitor, mtm));
             log::trace!(target: LOG, "pointer monitor installed");
         }
-        None => log::error!(target: LOG, "addLocalMonitorForEventsMatchingMask returned nil"),
+        None => {
+            log::error!(target: LOG, "addLocalMonitorForEventsMatchingMask returned nil")
+        }
     }
 }
 
 /// Make a view accept drags from other apps.
-pub(crate) fn install_destination(shared: &Arc<Shared>, mtm: MainThreadMarker, key: SurfaceKey) {
+pub(crate) fn install_destination(
+    shared: &Arc<Shared>,
+    mtm: MainThreadMarker,
+    key: SurfaceKey,
+) {
     super::destination::install(shared, mtm, key);
 }

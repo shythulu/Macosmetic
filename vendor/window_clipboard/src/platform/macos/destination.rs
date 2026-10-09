@@ -18,10 +18,13 @@ use super::state::{uri_list, Offer, SurfaceKey};
 use super::{Shared, LOG};
 use dnd::DndAction;
 
-use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, ProtocolObject, Sel};
+use objc2::runtime::{
+    AnyClass, AnyObject, Bool, ClassBuilder, ProtocolObject, Sel,
+};
 use objc2::{sel, MainThreadMarker};
 use objc2_app_kit::{
-    NSDragOperation, NSDraggingInfo, NSEvent, NSPasteboard, NSPasteboardTypeFileURL, NSView,
+    NSDragOperation, NSDraggingInfo, NSEvent, NSPasteboard,
+    NSPasteboardTypeFileURL, NSView,
 };
 use objc2_foundation::{NSArray, NSObjectProtocol, NSURL};
 use std::ffi::CStr;
@@ -33,7 +36,11 @@ static SHARED: Mutex<Option<Weak<Shared>>> = Mutex::new(None);
 static CLASS: OnceLock<MainThreadCell<&'static AnyClass>> = OnceLock::new();
 
 /// Make a registered view accept file drags from other apps.
-pub(crate) fn install(shared: &Arc<Shared>, mtm: MainThreadMarker, key: SurfaceKey) {
+pub(crate) fn install(
+    shared: &Arc<Shared>,
+    mtm: MainThreadMarker,
+    key: SurfaceKey,
+) {
     *SHARED.lock().unwrap() = Some(Arc::downgrade(shared));
 
     // SAFETY: keys are live `NSView` pointers (see `appkit::sample_at`).
@@ -42,7 +49,8 @@ pub(crate) fn install(shared: &Arc<Shared>, mtm: MainThreadMarker, key: SurfaceK
     if current.name() == CLASS_NAME {
         return;
     }
-    let class = CLASS.get_or_init(|| MainThreadCell::new(build_class(current), mtm));
+    let class =
+        CLASS.get_or_init(|| MainThreadCell::new(build_class(current), mtm));
     let class: &'static AnyClass = class.get(mtm);
     if class.superclass().map(|s| s.name()) != Some(current.name()) {
         log::warn!(
@@ -62,7 +70,9 @@ pub(crate) fn install(shared: &Arc<Shared>, mtm: MainThreadMarker, key: SurfaceK
     let is_content_view = view
         .window()
         .and_then(|w| w.contentView())
-        .is_some_and(|cv| std::ptr::eq(&*cv as *const NSView, view as *const NSView));
+        .is_some_and(|cv| {
+            std::ptr::eq(&*cv as *const NSView, view as *const NSView)
+        });
     log::debug!(
         target: LOG,
         "view {key:#x} now accepts file drags from other apps: class={:?} responds={} types={} content_view={is_content_view}",
@@ -91,7 +101,8 @@ fn build_class(superclass: &AnyClass) -> &'static AnyClass {
         );
         builder.add_method(
             sel!(prepareForDragOperation:),
-            prepare_for_drag_operation as unsafe extern "C-unwind" fn(_, _, _) -> _,
+            prepare_for_drag_operation
+                as unsafe extern "C-unwind" fn(_, _, _) -> _,
         );
         builder.add_method(
             sel!(performDragOperation:),
@@ -99,7 +110,8 @@ fn build_class(superclass: &AnyClass) -> &'static AnyClass {
         );
         builder.add_method(
             sel!(wantsPeriodicDraggingUpdates),
-            wants_periodic_dragging_updates as unsafe extern "C-unwind" fn(_, _) -> _,
+            wants_periodic_dragging_updates
+                as unsafe extern "C-unwind" fn(_, _) -> _,
         );
     }
     builder.register()
@@ -162,12 +174,19 @@ fn operation_for(action: DndAction) -> NSDragOperation {
     }
 }
 
-fn location_in(view: &NSView, info: &ProtocolObject<dyn NSDraggingInfo>) -> (f64, f64) {
+fn location_in(
+    view: &NSView,
+    info: &ProtocolObject<dyn NSDraggingInfo>,
+) -> (f64, f64) {
     let p = view.convertPoint_fromView(info.draggingLocation(), None);
     (p.x, p.y)
 }
 
-fn track(shared: &Shared, view: &NSView, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+fn track(
+    shared: &Shared,
+    view: &NSView,
+    info: &ProtocolObject<dyn NSDraggingInfo>,
+) -> NSDragOperation {
     let key = view as *const NSView as SurfaceKey;
     let (x, y) = location_in(view, info);
     let mods = modifiers(NSEvent::modifierFlags_class());
@@ -199,11 +218,11 @@ unsafe extern "C-unwind" fn dragging_entered(
     }
     let actions = source_actions(info.draggingSourceOperationMask());
     log::debug!(target: LOG, "external drag entered, source actions {actions:?}");
-    let events = shared
-        .dnd
-        .lock()
-        .unwrap()
-        .begin(Offer::External(items), actions, false);
+    let events = shared.dnd.lock().unwrap().begin(
+        Offer::External(items),
+        actions,
+        false,
+    );
     shared.emit(events);
     track(&shared, this, info)
 }
@@ -263,7 +282,9 @@ unsafe extern "C-unwind" fn perform_drag_operation(
     Bool::new(!matches!(outcome, super::state::DropOutcome::Rejected))
 }
 
-unsafe extern "C-unwind" fn wants_periodic_dragging_updates(_this: &NSView, _sel: Sel) -> Bool {
+unsafe extern "C-unwind" fn wants_periodic_dragging_updates(
+    _this: &NSView,
+    _sel: Sel,
+) -> Bool {
     Bool::NO
 }
-
