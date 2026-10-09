@@ -9,5 +9,6 @@
 /target/
 /test/
 /vendor.tar
-/vendor/
+/vendor/*
+!/vendor/window_clipboard/
 .DS_Store

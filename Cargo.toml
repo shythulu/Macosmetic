@@ -202,6 +202,14 @@ tokio = { version = "1", features = ["rt", "macros"] }
 # [patch.'https://github.com/pop-os/cosmic-text']
 # cosmic-text = { path = "../cosmic-text" }
 
+# Vendored copy of pop-os/window_clipboard at the revision the lock pinned (f68595e,
+# tag sctk-0.20) with a working macOS `DndProvider`. Upstream's macOS backend is an
+# empty stub, so no drag and drop reaches iced there. See vendor/window_clipboard/MACOSMETIC.md.
+[patch.'https://github.com/pop-os/window_clipboard']
+window_clipboard = { path = "vendor/window_clipboard" }
+dnd = { path = "vendor/window_clipboard/dnd" }
+mime = { path = "vendor/window_clipboard/mime" }
+
 # Fork of pop-os/libcosmic with the macOS patches this port needs (icon theme
 # lookup on macOS). Branch `macosmetic` sits on the upstream revision the lock
 # pinned; rebase it when moving to a newer libcosmic.

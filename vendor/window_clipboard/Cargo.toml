@@ -1,0 +1,69 @@
+[package]
+name = "window_clipboard"
+version = "0.4.1"
+authors = ["Héctor Ramón Jiménez <hector0193@gmail.com>"]
+edition = "2021"
+description = "A library to obtain clipboard access from a `raw-window-handle`"
+license = "MIT"
+repository = "https://github.com/hecrj/window_clipboard"
+documentation = "https://docs.rs/window_clipboard"
+readme = "README.md"
+keywords = ["clipboard", "window", "ui", "gui", "raw-window-handle"]
+categories = ["gui"]
+
+[dependencies]
+raw-window-handle = { version = "0.6", features = ["std"] }
+thiserror = "1.0"
+mime = { path = "./mime" }
+dnd = { path = "./dnd" }
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = { version = "5.0", features = ["std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+clipboard_macos = { version = "0.1", path = "./macos" }
+# Macosmetic: the macOS DnD backend (src/platform/macos/). Versions match the ones winit
+# and the app already pull, so nothing new is downloaded.
+log = "0.4"
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "bitflags",
+    "block2",
+    "objc2-core-foundation",
+    "NSApplication",
+    "NSBitmapImageRep",
+    "NSDragging",
+    "NSDraggingItem",
+    "NSDraggingSession",
+    "NSEvent",
+    "NSGraphics",
+    "NSImage",
+    "NSImageRep",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "NSArray",
+    "NSData",
+    "NSDictionary",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSObject",
+    "NSString",
+    "NSURL",
+    "NSValue",
+] }
+
+[target.'cfg(all(unix, not(any(target_os="macos", target_os="android", target_os="emscripten", target_os="ios", target_os="redox"))))'.dependencies]
+clipboard_x11 = { version = "0.4.2", path = "./x11" }
+clipboard_wayland = { version = "0.2.2", path = "./wayland" }
+
+[workspace]
+members = ["dnd", "macos", "mime", "dnd", "wayland", "x11"]
