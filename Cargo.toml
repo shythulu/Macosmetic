@@ -164,6 +164,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "block2",
     "NSDictionary",
     "NSError",
+    # Move to Trash without Finder (src/trash_macos.rs).
+    "NSFileManager",
     "NSGeometry",
     # The system language a Finder launch does not pass in (src/launch_macos.rs).
     "NSLocale",
@@ -188,6 +190,8 @@ objc2-uniform-type-identifiers = { version = "0.3", default-features = false, fe
     "UTCoreTypes",
     "UTType",
 ], optional = true }
+# The Put Back journal (src/trash_macos.rs).
+serde_json = "1"
 
 [build-dependencies]
 xdgen = "0.1"

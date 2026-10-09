@@ -846,6 +846,33 @@ impl Operation {
             Self::Copy { paths, to } => {
                 copy_or_move(paths, to, Method::Copy, msg_tx, controller).await
             }
+            // One worker pass through NSFileManager, journaled for Undo and Put Back.
+            #[cfg(target_os = "macos")]
+            Self::Delete { paths } => {
+                let journal = crate::trash_macos::journal_path().ok_or_else(|| {
+                    OperationError::from_msg("no data folder for the trash journal")
+                })?;
+                let total = paths.len();
+                let controller_clone = controller.clone();
+                compio::runtime::spawn_blocking(move || {
+                    let controller = controller_clone;
+                    crate::trash_macos::trash_paths(
+                        &journal,
+                        &paths,
+                        |i| {
+                            futures::executor::block_on(controller.check())
+                                .map_err(|s| OperationError::from_state(s, &controller))?;
+                            controller.set_progress(i as f32 / total as f32);
+                            Ok(())
+                        },
+                        |e| OperationError::from_err(e, &controller),
+                    )
+                })
+                .await
+                .map_err(wrap_compio_spawn_error)??;
+                Ok(OperationSelection::default())
+            }
+            #[cfg(not(target_os = "macos"))]
             Self::Delete { paths } => {
                 let total = paths.len();
                 for (i, path) in paths.into_iter().enumerate() {
@@ -1135,12 +1162,34 @@ impl Operation {
             }
             .await
             .map_err(wrap_compio_spawn_error)?,
+            // Put Back from the journal that the macOS Delete arm writes.
             #[cfg(target_os = "macos")]
-            Self::Restore { .. } => {
-                // TODO: add support for macos
-                return Err(OperationError::from_msg(
-                    "Restoring from trash is not supported on macos",
-                ));
+            Self::Restore { items } => {
+                let journal = crate::trash_macos::journal_path().ok_or_else(|| {
+                    OperationError::from_msg("no data folder for the trash journal")
+                })?;
+                let total = items.len();
+                let controller_clone = controller.clone();
+                let paths = compio::runtime::spawn_blocking(move || {
+                    let controller = controller_clone;
+                    crate::trash_macos::restore_items(
+                        &journal,
+                        &items,
+                        |i| {
+                            futures::executor::block_on(controller.check())
+                                .map_err(|s| OperationError::from_state(s, &controller))?;
+                            controller.set_progress(i as f32 / total as f32);
+                            Ok(())
+                        },
+                        |e| OperationError::from_err(e, &controller),
+                    )
+                })
+                .await
+                .map_err(wrap_compio_spawn_error)??;
+                Ok(OperationSelection {
+                    ignored: Vec::new(),
+                    selected: paths,
+                })
             }
             #[cfg(not(target_os = "macos"))]
             Self::Restore { items } => {

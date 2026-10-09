@@ -226,9 +226,10 @@ impl TrashExt for Trash {
     }
 }
 
-// This config statement is from trash::os_limited, inverted
+// This config statement is from trash::os_limited, inverted, less macOS
 #[cfg(not(any(
     target_os = "windows",
+    target_os = "macos",
     all(
         unix,
         not(target_os = "macos"),
@@ -237,3 +238,28 @@ impl TrashExt for Trash {
     )
 )))]
 impl TrashExt for Trash {}
+
+/// macOS lists only what this app trashed, from the Put Back journal. `listable` stays
+/// false, because the rest of `~/.Trash` needs Full Disk Access, so an empty view still
+/// explains that. `is_empty` keeps its default: the sidebar asks every frame, and the
+/// journal is a file read.
+#[cfg(target_os = "macos")]
+impl TrashExt for Trash {
+    fn scan(sizes: IconSizes) -> Vec<Item> {
+        use crate::tab::item_from_trash_entry;
+
+        let Some(journal) = crate::trash_macos::journal_path() else {
+            return Vec::new();
+        };
+        let mut items: Vec<_> = crate::trash_macos::list(&journal)
+            .into_iter()
+            .map(|(entry, metadata)| item_from_trash_entry(entry, metadata, sizes))
+            .collect();
+        items.sort_by(|a, b| {
+            b.metadata.is_dir().cmp(&a.metadata.is_dir()).then_with(|| {
+                crate::localize::LANGUAGE_SORTER.compare(&a.display_name, &b.display_name)
+            })
+        });
+        items
+    }
+}
