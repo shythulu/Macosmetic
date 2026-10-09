@@ -29,6 +29,7 @@ mod folder_appearance;
 pub mod folder_look;
 #[cfg(target_os = "macos")]
 pub(crate) mod folder_opener_macos;
+#[cfg(target_os = "macos")]
 mod fs_flags_macos;
 mod gesture;
 #[cfg(target_os = "macos")]
