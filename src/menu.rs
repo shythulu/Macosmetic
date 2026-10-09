@@ -84,11 +84,17 @@ pub fn context_menu<'a>(
     let mut selected_desktop_entry = None;
     let mut selected_types: Vec<Mime> = vec![];
     let mut selected_mount_point = 0;
+    #[cfg(target_os = "macos")]
+    let mut selected_package = 0;
     let mut any_trash_item = false;
     if let Some(items) = tab.items_opt() {
         for item in items {
             if item.selected {
                 selected += 1;
+                #[cfg(target_os = "macos")]
+                {
+                    selected_package += usize::from(item.metadata.is_package());
+                }
                 if item.metadata.is_dir() {
                     selected_mount_point += i32::from(item.is_mount_point);
                     selected_dir += 1;
@@ -187,6 +193,14 @@ pub fn context_menu<'a>(
                     children.push(menu_item(fl!("menu-open-with"), Action::OpenWith));
                     if selected_dir == 1 {
                         children.push(menu_item(fl!("open-in-terminal"), Action::OpenTerminal));
+                    }
+                    // A package opens as a file; this is the way inside it, as in Finder.
+                    #[cfg(target_os = "macos")]
+                    if selected_package == 1 {
+                        children.push(menu_item(
+                            fl!("show-package-contents"),
+                            Action::ShowPackageContents,
+                        ));
                     }
                 }
                 if tab.location.is_recents() || matches!(tab.location, Location::Search(..)) {

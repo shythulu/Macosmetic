@@ -158,10 +158,18 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSResponder",
     "NSView",
     "NSWindow",
+    # The Finder icon of an app, which Quick Look declines to render (src/quicklook_macos.rs).
+    "objc2-core-graphics",
+    "NSBitmapImageRep",
+    "NSGraphicsContext",
+    "NSImage",
+    "NSImageRep",
+    "NSWorkspace",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "block2",
+    "NSData",
     "NSDictionary",
     "NSError",
     "NSGeometry",
@@ -173,6 +181,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSString",
     "NSURL",
     "NSUserDefaults",
+    # NSNumber, for boolean NSURL resource values (src/url_values_macos.rs).
+    "NSValue",
 ] }
 objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = [
     "std",

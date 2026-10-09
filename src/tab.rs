@@ -850,47 +850,62 @@ pub fn item_from_entry(
         }
     };
 
-    let (mime, icon_handle_grid, icon_handle_list, icon_handle_list_condensed) =
-        if metadata.is_dir() {
-            // A `.directory` file is one more read per subfolder; skip it on remote mounts.
-            let look = folder_look::look_for(&path, !remote);
+    let is_package = metadata.is_dir() && path_is_package(&path);
+
+    let (mime, icon_handle_grid, icon_handle_list, icon_handle_list_condensed) = if is_package {
+        // A package shows as the file it stands for. Its type comes from the extension
+        // alone: asking the MIME database about the path would see a directory again.
+        let mime = mime_guess::from_path(&path).first_or_octet_stream();
+        (
+            mime.clone(),
+            mime_icon(mime.clone(), sizes.grid()),
+            mime_icon(mime.clone(), sizes.list()),
+            mime_icon(mime, sizes.list_condensed()),
+        )
+    } else if metadata.is_dir() {
+        // A `.directory` file is one more read per subfolder; skip it on remote mounts.
+        let look = folder_look::look_for(&path, !remote);
+        (
+            //TODO: make this a static
+            "inode/directory".parse().unwrap(),
+            folder_icon_with_look(&path, look.as_ref(), sizes.grid()),
+            folder_icon_with_look(&path, look.as_ref(), sizes.list()),
+            folder_icon_with_look(&path, look.as_ref(), sizes.list_condensed()),
+        )
+    } else {
+        let mime = mime_for_path(&path, Some(&metadata), remote);
+        //TODO: clean this up, implement for trash
+        let icon_name_opt = if mime == "application/x-desktop" {
+            is_desktop = true;
+            get_desktop_file_icon(&path)
+        } else {
+            None
+        };
+        if let Some(icon_name) = icon_name_opt {
             (
-                //TODO: make this a static
-                "inode/directory".parse().unwrap(),
-                folder_icon_with_look(&path, look.as_ref(), sizes.grid()),
-                folder_icon_with_look(&path, look.as_ref(), sizes.list()),
-                folder_icon_with_look(&path, look.as_ref(), sizes.list_condensed()),
+                mime,
+                desktop_icon_handle(&icon_name, sizes.grid()),
+                desktop_icon_handle(&icon_name, sizes.list()),
+                desktop_icon_handle(&icon_name, sizes.list_condensed()),
             )
         } else {
-            let mime = mime_for_path(&path, Some(&metadata), remote);
-            //TODO: clean this up, implement for trash
-            let icon_name_opt = if mime == "application/x-desktop" {
-                is_desktop = true;
-                get_desktop_file_icon(&path)
-            } else {
-                None
-            };
-            if let Some(icon_name) = icon_name_opt {
-                (
-                    mime,
-                    desktop_icon_handle(&icon_name, sizes.grid()),
-                    desktop_icon_handle(&icon_name, sizes.list()),
-                    desktop_icon_handle(&icon_name, sizes.list_condensed()),
-                )
-            } else {
-                (
-                    mime.clone(),
-                    mime_icon(mime.clone(), sizes.grid()),
-                    mime_icon(mime.clone(), sizes.list()),
-                    mime_icon(mime, sizes.list_condensed()),
-                )
-            }
-        };
+            (
+                mime.clone(),
+                mime_icon(mime.clone(), sizes.grid()),
+                mime_icon(mime.clone(), sizes.list()),
+                mime_icon(mime, sizes.list_condensed()),
+            )
+        }
+    };
 
     let mut children_opt = None;
     let mut dir_size = DirSize::NotDirectory;
     if metadata.is_dir() && !remote {
+        // A package still has a total size, shown in the details pane, but its item count
+        // would expose it as a folder.
         dir_size = DirSize::Calculating(Controller::default());
+    }
+    if metadata.is_dir() && !remote && !is_package {
         //TODO: calculate children in the background (and make it cancellable?)
         match fs::read_dir(&path) {
             Ok(entries) => {
@@ -911,6 +926,7 @@ pub fn item_from_entry(
         metadata: ItemMetadata::Path {
             metadata,
             children_opt,
+            is_package,
         },
         hidden,
         location_opt: Some(Location::Path(path)),
@@ -1916,6 +1932,8 @@ pub enum Message {
     /// Access can be granted.
     OpenPrivacySettings,
     Reload,
+    /// Browse inside the selected package instead of opening it.
+    ShowPackageContents,
     RightClick(Option<Point>, Option<usize>),
     MiddleClick(usize),
     Resize(Rectangle),
@@ -2005,6 +2023,18 @@ pub enum ChecksumState {
 /// PATH, so nothing may be looked up by name (porting notes 5.4).
 #[cfg(target_os = "macos")]
 pub const MACOS_OPEN: &str = "/usr/bin/open";
+
+/// Whether the directory at `path` is a package that opens as a single file. Only macOS has
+/// packages; see [`crate::url_values_macos::is_package`].
+pub fn path_is_package(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    return crate::url_values_macos::is_package(path);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
 
 /// The deep link to the pane that grants Full Disk Access. There is no API to prompt for
 /// it, so pointing at System Settings is all an app can do; porting notes 4.2.
@@ -2115,6 +2145,10 @@ pub enum ItemMetadata {
     Path {
         metadata: Metadata,
         children_opt: Option<usize>,
+        /// A directory that macOS shows and opens as a single file, such as an `.app` or an
+        /// `.rtfd`. It reports as a file from [`ItemMetadata::is_dir`]; "Show Package
+        /// Contents" is the way inside. Always false on other platforms.
+        is_package: bool,
     },
     /// An entry the OS refused to stat; see [`ItemAccess::Denied`]. It carries no metadata
     /// by definition, so the size and modified columns stay blank.
@@ -2143,7 +2177,11 @@ pub enum ItemMetadata {
 impl ItemMetadata {
     pub fn is_dir(&self) -> bool {
         match self {
-            Self::Path { metadata, .. } => metadata.is_dir(),
+            Self::Path {
+                metadata,
+                is_package,
+                ..
+            } => metadata.is_dir() && !is_package,
             Self::Denied { is_dir } => *is_dir,
             Self::Trash { metadata, .. } => match metadata.size {
                 trash::TrashItemSize::Entries(_) => true,
@@ -2154,6 +2192,17 @@ impl ItemMetadata {
             #[cfg(feature = "gvfs")]
             Self::GvfsPath { is_dir, .. } => *is_dir,
         }
+    }
+
+    /// Whether this is a package: a directory shown and opened as a single file.
+    pub fn is_package(&self) -> bool {
+        matches!(
+            self,
+            Self::Path {
+                is_package: true,
+                ..
+            }
+        )
     }
 
     pub fn modified(&self) -> Option<SystemTime> {
@@ -2238,7 +2287,7 @@ impl ItemThumbnail {
                     // Quick Look, and stays a Quick Look preview: the source path is not an
                     // image, so the gallery must not try to load it at full resolution.
                     #[cfg(all(target_os = "macos", feature = "quicklook"))]
-                    if crate::quicklook_macos::owns_preview(&mime) {
+                    if metadata.is_package() || crate::quicklook_macos::owns_preview(&mime) {
                         return Self::QuickLook(widget::image::Handle::from_path(thumbnail_path));
                     }
 
@@ -2270,6 +2319,33 @@ impl ItemThumbnail {
                     err
                 );
             }
+        }
+
+        // A package is a directory, so none of the readers below can open it. Quick Look
+        // renders it the way Finder does: an app's own icon, a document's first page.
+        if metadata.is_package() {
+            #[cfg(all(target_os = "macos", feature = "quicklook"))]
+            {
+                let thumbnail_dir = thumbnail_cacher
+                    .as_ref()
+                    .ok()
+                    .map(ThumbnailCacher::thumbnail_dir);
+                if let Some((item_thumbnail, temp_file)) = Self::generate_thumbnail_quicklook(
+                    path,
+                    &mime,
+                    true,
+                    thumbnail_size,
+                    thumbnail_dir,
+                ) {
+                    if let Ok(cache) = thumbnail_cacher
+                        && let Err(err) = cache.update_with_temp_file(temp_file)
+                    {
+                        log::warn!("failed to update cache for {}: {}", path.display(), err);
+                    }
+                    return item_thumbnail;
+                }
+            }
+            return Self::NotImage;
         }
 
         let size = metadata.file_size().unwrap_or_default();
@@ -2395,7 +2471,7 @@ impl ItemThumbnail {
         // office documents, video and the image formats the `image` crate cannot decode.
         #[cfg(all(target_os = "macos", feature = "quicklook"))]
         if let Some((item_thumbnail, temp_file)) =
-            Self::generate_thumbnail_quicklook(path, &mime, thumbnail_size, thumbnail_dir)
+            Self::generate_thumbnail_quicklook(path, &mime, false, thumbnail_size, thumbnail_dir)
         {
             if let Ok(cache) = thumbnail_cacher
                 && let Err(err) = cache.update_with_temp_file(temp_file)
@@ -2491,14 +2567,18 @@ impl ItemThumbnail {
     /// the thumbnail cache so the caller can move it into place without crossing a filesystem.
     /// Quick Look overwrites the file the temp handle already created, and a failed request
     /// leaves it empty, which is why the decode below is what decides success.
+    ///
+    /// A package (`is_package`) always goes to Quick Look and accepts its icon: for an app the
+    /// icon is the only picture there is, and it is what Finder shows.
     #[cfg(all(target_os = "macos", feature = "quicklook"))]
     fn generate_thumbnail_quicklook(
         path: &Path,
         mime: &mime::Mime,
+        is_package: bool,
         thumbnail_size: u32,
         thumbnail_dir: Option<&Path>,
     ) -> Option<(Self, NamedTempFile)> {
-        if !crate::quicklook_macos::owns_preview(mime) {
+        if !is_package && !crate::quicklook_macos::owns_preview(mime) {
             return None;
         }
 
@@ -2520,13 +2600,34 @@ impl ItemThumbnail {
             }
         };
 
-        if let Err(err) = crate::quicklook_macos::save_preview_png(
-            path,
-            file.path(),
-            mime,
-            f64::from(thumbnail_size),
-            1.0,
-        ) {
+        let result = if is_package {
+            // Document packages (`.pages`, `.rtfd`) get a real preview from Quick Look. Apps
+            // get nothing from it, so they fall back to the icon Finder shows.
+            crate::quicklook_macos::save_thumbnail_png(
+                path,
+                file.path(),
+                f64::from(thumbnail_size),
+                1.0,
+                crate::quicklook_macos::Representation::IconOrThumbnail,
+            )
+            .or_else(|_| {
+                crate::quicklook_macos::save_icon_png(
+                    path,
+                    file.path(),
+                    f64::from(thumbnail_size),
+                    1.0,
+                )
+            })
+        } else {
+            crate::quicklook_macos::save_preview_png(
+                path,
+                file.path(),
+                mime,
+                f64::from(thumbnail_size),
+                1.0,
+            )
+        };
+        if let Err(err) = result {
             log::debug!("quick look declined {}: {}", path.display(), err);
             return None;
         }
@@ -3092,6 +3193,7 @@ impl Item {
         if let ItemMetadata::Path {
             metadata,
             children_opt,
+            ..
         } = &self.metadata
         {
             if metadata.is_dir() {
@@ -4934,7 +5036,7 @@ impl Tab {
             Message::Open(path_opt) => {
                 match path_opt {
                     Some(path) => {
-                        if path.is_dir() {
+                        if path.is_dir() && !path_is_package(&path) {
                             cd = Some(Location::Path(path));
                         } else {
                             commands.push(Command::OpenFile(vec![path]));
@@ -5016,6 +5118,18 @@ impl Tab {
             }
             Message::OpenPrivacySettings => {
                 open_privacy_settings();
+            }
+            Message::ShowPackageContents => {
+                if let Some(location) = self.items_opt.as_ref().and_then(|items| {
+                    let mut selected = items.iter().filter(|item| item.selected);
+                    let item = selected.next().filter(|_| selected.next().is_none())?;
+                    item.metadata
+                        .is_package()
+                        .then(|| item.location_opt.clone())
+                        .flatten()
+                }) {
+                    cd = Some(location);
+                }
             }
             Message::Reload => {
                 //TODO: support keeping selected locations without paths
@@ -5647,9 +5761,15 @@ impl Tab {
                 items.sort_by(|a, b| {
                     // entries take precedence over size
                     let get_size = |x: &Item| match &x.metadata {
+                        // A package's own length is that of a directory, so it sorts as an
+                        // empty file.
+                        ItemMetadata::Path {
+                            is_package: true, ..
+                        } => (false, 0),
                         ItemMetadata::Path {
                             metadata,
                             children_opt,
+                            ..
                         } => {
                             if metadata.is_dir() {
                                 (true, children_opt.unwrap_or_default() as u64)
@@ -6825,6 +6945,7 @@ impl Tab {
                         ItemMetadata::Path {
                             metadata,
                             children_opt,
+                            ..
                         } => {
                             if metadata.is_dir() {
                                 //TODO: translate
@@ -8631,6 +8752,45 @@ mod tests {
         item_from_path(path, IconSizes::default()).expect("failed to build the item")
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_app_bundle_lists_as_a_file() {
+        let item = item_from_path("/System/Applications/Calculator.app", IconSizes::default())
+            .expect("failed to build the item");
+        assert!(item.metadata.is_package());
+        assert!(!item.metadata.is_dir(), "a package must open, not navigate");
+        assert_ne!(item.mime, "inode/directory");
+        // No item count: that would show it as a folder.
+        assert_eq!(item.metadata.children_count(), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_plain_directory_still_lists_as_a_folder() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let sub = dir.path().join("plain");
+        fs::create_dir(&sub)?;
+        let item = item_from_path(&sub, IconSizes::default()).expect("failed to build the item");
+        assert!(!item.metadata.is_package());
+        assert!(item.metadata.is_dir());
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn packages_sort_among_files() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        fs::create_dir(dir.path().join("b-folder"))?;
+        fs::create_dir(dir.path().join("a.rtfd"))?;
+        fs::write(dir.path().join("c.txt"), b"")?;
+        let names: Vec<String> = scan_path(&dir.path().to_path_buf(), IconSizes::default())
+            .into_iter()
+            .map(|item| item.name)
+            .collect();
+        assert_eq!(names, ["b-folder", "a.rtfd", "c.txt"]);
+        Ok(())
+    }
+
     #[test]
     fn a_dotfile_appears_once_hidden_files_are_shown() -> io::Result<()> {
         let dir = TempDir::new()?;
@@ -9068,6 +9228,7 @@ mod tests {
         let item_metadata = ItemMetadata::Path {
             metadata,
             children_opt: None,
+            is_package: false,
         };
         let thumb = ItemThumbnail::new(
             &path,
@@ -9104,6 +9265,7 @@ trailer<</Root 1 0 R/Size 4>>\n\
         let item_metadata = ItemMetadata::Path {
             metadata: fs::metadata(&path)?,
             children_opt: None,
+            is_package: false,
         };
 
         let thumb = ItemThumbnail::new(
@@ -9132,6 +9294,7 @@ trailer<</Root 1 0 R/Size 4>>\n\
         let item_metadata = ItemMetadata::Path {
             metadata: fs::metadata(&path)?,
             children_opt: None,
+            is_package: false,
         };
 
         let thumb = ItemThumbnail::new(
@@ -9151,6 +9314,26 @@ trailer<</Root 1 0 R/Size 4>>\n\
         Ok(())
     }
 
+    #[cfg(all(target_os = "macos", feature = "quicklook"))]
+    #[test]
+    fn item_thumbnail_app_bundle_gets_its_icon_from_quick_look() {
+        let item = item_from_path("/System/Applications/Calculator.app", IconSizes::default())
+            .expect("failed to build the item");
+        let thumb = ItemThumbnail::new(
+            Path::new("/System/Applications/Calculator.app"),
+            item.metadata,
+            item.mime,
+            128,
+            100 * 1024 * 1024,
+            1,
+            8,
+        );
+        assert!(
+            matches!(thumb, ItemThumbnail::QuickLook(_)),
+            "an app should show its own icon, not a folder"
+        );
+    }
+
     #[test]
     fn item_thumbnail_text_preview_empty_file_returns_not_image() -> io::Result<()> {
         let dir = TempDir::new()?;
@@ -9160,6 +9343,7 @@ trailer<</Root 1 0 R/Size 4>>\n\
         let item_metadata = ItemMetadata::Path {
             metadata,
             children_opt: None,
+            is_package: false,
         };
         let thumb = ItemThumbnail::new(
             &path,
@@ -9187,6 +9371,7 @@ trailer<</Root 1 0 R/Size 4>>\n\
         let item_metadata = ItemMetadata::Path {
             metadata,
             children_opt: None,
+            is_package: false,
         };
         let thumb = ItemThumbnail::new(
             &path,
