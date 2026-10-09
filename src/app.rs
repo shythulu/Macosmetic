@@ -82,6 +82,7 @@ use crate::operation::{
     copy_unique_path,
 };
 use crate::spawn_detached::spawn_detached;
+use crate::status_bar::{self, StatusBar};
 use crate::tab::{
     self, HOVER_DURATION, HeadingOptions, ItemMetadata, Location, SORT_OPTION_FALLBACK,
     SearchLocation, Tab,
@@ -255,6 +256,7 @@ pub enum Action {
     ToggleFoldersFirst,
     ToggleShowHidden,
     ToggleSort(HeadingOptions),
+    ToggleStatusBar,
     WindowClose,
     WindowNew,
     ZoomDefault,
@@ -337,6 +339,7 @@ impl Action {
             Self::TabViewList => Message::TabView(entity_opt, tab::View::List),
             Self::ToggleFoldersFirst => Message::ToggleFoldersFirst,
             Self::ToggleShowHidden => Message::ToggleShowHidden,
+            Self::ToggleStatusBar => Message::StatusBar(status_bar::Message::Toggle),
             Self::ToggleSort(sort) => {
                 Message::TabMessage(entity_opt, tab::Message::ToggleSort(*sort))
             }
@@ -529,6 +532,7 @@ pub enum Message {
     SetShowDetails(bool),
     SetShowRecents(bool),
     SetTypeToSearch(TypeToSearch),
+    StatusBar(status_bar::Message),
     SystemThemeModeChange,
     Size(window::Id, Size),
     /// A window reported how many physical pixels it draws per logical pixel.
@@ -856,6 +860,7 @@ pub struct App {
     pending_operation_id: u64,
     pending_operations: BTreeMap<u64, (Operation, Controller)>,
     progress_operations: BTreeSet<u64>,
+    status_bar: StatusBar,
     complete_operations: BTreeMap<u64, Operation>,
     failed_operations: BTreeMap<u64, (Operation, Controller, String)>,
     /// Set once the last close was a quit, so that [`Message::MaybeExit`] ends the process as
@@ -1536,6 +1541,15 @@ impl App {
         }
         // Potentially show a notification
         commands.push(self.update_notification());
+        // Operations change free space
+        commands.push(
+            status_bar::refresh(
+                self.tab_model
+                    .active_data::<Tab>()
+                    .and_then(|tab| tab.location.path_opt().cloned()),
+            )
+            .map(|m| cosmic::action::app(Message::StatusBar(m))),
+        );
         // Rescan and select based on operation
         commands.push(self.rescan_operation_selection(op_sel));
         // Manually rescan any trash tabs after any operation is completed
@@ -2749,6 +2763,7 @@ impl Application for App {
             pending_operation_id: 0,
             pending_operations: BTreeMap::new(),
             progress_operations: BTreeSet::new(),
+            status_bar: StatusBar::default(),
             complete_operations: BTreeMap::new(),
             failed_operations: BTreeMap::new(),
             quit_requested: false,
@@ -4814,6 +4829,13 @@ impl Application for App {
                 config_set!(show_recents, show_recents);
                 return self.update_config();
             }
+            Message::StatusBar(message) => {
+                if let status_bar::Message::Toggle = message {
+                    config_set!(show_status_bar, !self.config.show_status_bar);
+                    return self.update_config();
+                }
+                self.status_bar.update(message);
+            }
             Message::SetTypeToSearch(type_to_search) => {
                 config_set!(type_to_search, type_to_search);
                 return self.update_config();
@@ -5163,7 +5185,11 @@ impl Application for App {
                         tab.sort_name = sort.0;
                         tab.sort_direction = sort.1;
 
-                        let mut tasks = Vec::with_capacity(2);
+                        let mut tasks = Vec::with_capacity(3);
+                        tasks.push(
+                            status_bar::refresh(location.path_opt().cloned())
+                                .map(|m| cosmic::action::app(Message::StatusBar(m))),
+                        );
 
                         if let Some(selection_paths) = selection_paths {
                             tab.select_paths(selection_paths);
@@ -6871,8 +6897,15 @@ impl Application for App {
     }
 
     fn footer(&self) -> Option<Element<'_, Message>> {
+        let status_bar_opt = if self.config.show_status_bar {
+            self.tab_model
+                .active_data::<Tab>()
+                .and_then(|tab| status_bar::view(tab, &self.status_bar))
+        } else {
+            None
+        };
         if self.progress_operations.is_empty() {
-            return None;
+            return status_bar_opt;
         }
 
         let cosmic_theme::Spacing {
@@ -6981,7 +7014,12 @@ impl Application for App {
         .padding([8, space_xs])
         .layer(cosmic_theme::Layer::Primary);
 
-        Some(container.into())
+        Some(match status_bar_opt {
+            Some(status_bar) => {
+                widget::column::with_children([container.into(), status_bar]).into()
+            }
+            None => container.into(),
+        })
     }
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {

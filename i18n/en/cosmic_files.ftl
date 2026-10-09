@@ -305,6 +305,7 @@ search-application = Search by app name
 
 ## Show details
 show-details = Show details
+show-status-bar = Show status bar
 type = Type: {$mime}
 items = Items: {$items}
 item-size = Size: {$size}
@@ -430,3 +431,16 @@ sort-newest-first = Newest first
 sort-oldest-first = Oldest first
 sort-smallest-to-largest = Smallest to largest
 sort-largest-to-smallest = Largest to smallest
+
+# Status bar
+status-items = {$count} {$count ->
+    [one] item
+    *[other] items
+  }
+status-selected = {$selected} of {$count} selected
+status-selected-size = {$selected} of {$count} selected, {$size}
+status-available = {$size} available
+status-bytes = {$count} {$count ->
+    [one] byte
+    *[other] bytes
+  }

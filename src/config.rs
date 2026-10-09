@@ -217,6 +217,8 @@ pub struct Config {
     pub keybinds: Shortcuts,
     pub show_details: bool,
     pub show_recents: bool,
+    /// The item count and free space bar at the bottom of the window.
+    pub show_status_bar: bool,
     pub tab: TabConfig,
     pub type_to_search: TypeToSearch,
 }
@@ -283,6 +285,7 @@ impl Default for Config {
             keybinds: Shortcuts::new(),
             show_details: false,
             show_recents: true,
+            show_status_bar: true,
             tab: TabConfig::default(),
             type_to_search: TypeToSearch::Recursive,
         }

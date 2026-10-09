@@ -173,6 +173,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSString",
     "NSURL",
     "NSUserDefaults",
+    # NSNumber, for the volume free space the status bar reads (src/status_bar.rs).
+    "NSValue",
 ] }
 objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = [
     "std",

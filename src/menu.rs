@@ -713,6 +713,12 @@ pub fn menu_bar<'a>(
                             config.show_details,
                             Action::Preview,
                         ),
+                        menu::Item::CheckBox(
+                            fl!("show-status-bar"),
+                            None,
+                            config.show_status_bar,
+                            Action::ToggleStatusBar,
+                        ),
                         menu::Item::Divider,
                         menu_button_optional(
                             fl!("gallery-preview"),
