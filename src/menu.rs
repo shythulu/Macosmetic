@@ -48,6 +48,48 @@ impl MenuAction for TabAction {
     }
 }
 
+/// A filled circle in a tag colour, for the Tags submenu. Drawn as RGBA pixels: an SVG
+/// handle built from memory stops the context menu's submenu from opening on macOS.
+#[cfg(target_os = "macos")]
+fn tag_dot(colour: crate::tags::TagColour) -> Option<widget::icon::Handle> {
+    // Twice the 14 px menu icon size, so the dot is sharp on Retina displays.
+    const SIZE: u32 = 28;
+    const RADIUS: f32 = 10.0;
+    let (r, g, b) = colour.rgb()?;
+    let centre = SIZE as f32 / 2.0;
+    let mut pixels = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 + 0.5 - centre;
+            let dy = y as f32 + 0.5 - centre;
+            // One pixel of linear falloff at the edge for anti-aliasing.
+            let coverage = (RADIUS + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
+            pixels.extend_from_slice(&[r, g, b, (coverage * 255.0).round() as u8]);
+        }
+    }
+    Some(widget::icon::from_raster_pixels(SIZE, SIZE, pixels))
+}
+
+/// The "Tags" submenu: Finder's seven colour tags, then any other tag on the selection. A tag
+/// every selected item has is checked; clicking it removes it from all, clicking any other
+/// tag adds it to all.
+#[cfg(target_os = "macos")]
+fn tags_menu(sets: &[&[crate::tags::Tag]]) -> menu::Item<TabAction, String> {
+    let children = crate::tags_macos::menu_tags(sets)
+        .into_iter()
+        .enumerate()
+        .map(|(index, tag)| {
+            let entry = menu::Entry::new(tag.name, TabAction(Action::ToggleTag(index)))
+                .checked(tag.checked);
+            menu::Item::Entry(match tag_dot(tag.colour) {
+                Some(handle) => entry.icon(handle),
+                None => entry.reserve_icon(),
+            })
+        })
+        .collect();
+    menu::Item::Folder(fl!("tags-menu"), children)
+}
+
 pub fn context_menu<'a>(
     tab: &Tab,
     key_binds: &HashMap<KeyBind, Action>,
@@ -238,6 +280,13 @@ pub fn context_menu<'a>(
                 children.push(menu::Item::Divider);
 
                 //TODO: Print?
+                #[cfg(target_os = "macos")]
+                if let Some(sets) = tab
+                    .items_opt()
+                    .and_then(|items| crate::tags_macos::selected_tag_sets(items))
+                {
+                    children.push(tags_menu(&sets));
+                }
                 children.push(menu_item(fl!("show-details"), Action::Preview));
                 if selected == selected_dir
                     && selected_mount_point == 0

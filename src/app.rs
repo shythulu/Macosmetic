@@ -255,6 +255,9 @@ pub enum Action {
     ToggleFoldersFirst,
     ToggleShowHidden,
     ToggleSort(HeadingOptions),
+    /// Toggle entry N of the Tags submenu on the selection; see `tags_macos::menu_tags`.
+    #[cfg(target_os = "macos")]
+    ToggleTag(usize),
     WindowClose,
     WindowNew,
     ZoomDefault,
@@ -337,6 +340,8 @@ impl Action {
             Self::TabViewList => Message::TabView(entity_opt, tab::View::List),
             Self::ToggleFoldersFirst => Message::ToggleFoldersFirst,
             Self::ToggleShowHidden => Message::ToggleShowHidden,
+            #[cfg(target_os = "macos")]
+            Self::ToggleTag(index) => Message::ToggleTag(entity_opt, *index),
             Self::ToggleSort(sort) => {
                 Message::TabMessage(entity_opt, tab::Message::ToggleSort(*sort))
             }
@@ -505,6 +510,8 @@ pub enum Message {
     PendingPauseAll(bool),
     PermanentlyDelete(Option<Entity>),
     Preview(Option<Entity>),
+    #[cfg(target_os = "macos")]
+    ToggleTag(Option<Entity>, usize),
     /// Leave, once the pending operations have finished.
     Quit,
     ReloadMimeAppCache,
@@ -4619,6 +4626,15 @@ impl Application for App {
                         DialogPage::PermanentlyDelete { paths },
                         Some(PERMANENT_DELETE_BUTTON_ID.clone()),
                     );
+                }
+            }
+            #[cfg(target_os = "macos")]
+            Message::ToggleTag(entity_opt, index) => {
+                let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
+                    && let Some(items) = tab.items_opt_mut()
+                {
+                    crate::tags_macos::toggle_selected(items, index);
                 }
             }
             Message::Preview(entity_opt) => {

@@ -639,6 +639,8 @@ macro_rules! unit_actions {
             match action {
                 $(Action::$name => Some(stringify!($name)),)*
                 Action::RunContextAction(..) | Action::SetSort(..) | Action::ToggleSort(..) => None,
+                #[cfg(target_os = "macos")]
+                Action::ToggleTag(..) => None,
                 #[cfg(feature = "desktop")]
                 Action::ExecEntryAction(..) => None,
             }

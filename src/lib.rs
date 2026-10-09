@@ -45,6 +45,8 @@ pub(crate) mod quicklook_macos;
 mod spawn_detached;
 pub mod tab;
 pub mod tags;
+#[cfg(target_os = "macos")]
+pub(crate) mod tags_macos;
 mod thumbnail_cacher;
 mod thumbnailer;
 pub(crate) mod trash;
