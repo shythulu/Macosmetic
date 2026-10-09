@@ -20,6 +20,7 @@ pub mod channel;
 pub mod clipboard;
 pub mod config;
 mod context_action;
+mod copy_path;
 pub mod dialog;
 mod folder_appearance;
 pub mod folder_look;

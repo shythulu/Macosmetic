@@ -63,6 +63,7 @@ use crate::config::{
     AppTheme, Config, DesktopConfig, Favorite, IconSizes, State, TIME_CONFIG_ID, TabConfig,
     TimeConfig, TypeToSearch,
 };
+use crate::copy_path::{self, PathVariant};
 use crate::dialog::{
     Dialog, DialogFilter, DialogFilterPattern, DialogKind, DialogMessage, DialogResult,
     DialogSettings,
@@ -193,7 +194,7 @@ pub enum Action {
     AddToSidebar,
     Compress,
     Copy,
-    CopyPath,
+    CopyPath(PathVariant),
     CopyTo,
     Cut,
     CustomizeFolder,
@@ -270,7 +271,7 @@ impl Action {
             Self::AddToSidebar => Message::AddToSidebar(entity_opt),
             Self::Compress => Message::Compress(entity_opt),
             Self::Copy => Message::Copy(entity_opt),
-            Self::CopyPath => Message::CopyPath(entity_opt),
+            Self::CopyPath(variant) => Message::CopyPath(entity_opt, *variant),
             Self::CopyTo => Message::CopyTo(entity_opt),
             Self::Cut => Message::Cut(entity_opt),
             Self::CustomizeFolder => Message::CustomizeFolder(entity_opt),
@@ -407,7 +408,7 @@ pub enum Message {
     Compress(Option<Entity>),
     Config(Config),
     Copy(Option<Entity>),
-    CopyPath(Option<Entity>),
+    CopyPath(Option<Entity>, PathVariant),
     CopyTo(Option<Entity>),
     CopyToResult(DialogResult),
     CosmicSettings(&'static str),
@@ -3270,11 +3271,10 @@ impl Application for App {
                     ClipboardCopy::new(ClipboardKind::Copy, self.selected_paths(entity_opt));
                 return clipboard::write_data(contents);
             }
-            Message::CopyPath(entity_opt) => {
-                let paths = self.selected_paths(entity_opt);
-                let path_strings: Vec<String> =
-                    paths.into_iter().map(|p| p.display().to_string()).collect();
-                let text = path_strings.join("\n");
+            Message::CopyPath(entity_opt, variant) => {
+                let paths: Vec<PathBuf> = self.selected_paths(entity_opt).collect();
+                let home = dirs::home_dir().unwrap_or_default();
+                let text = copy_path::format_paths(&paths, variant, &home);
                 return clipboard::write(text);
             }
             Message::CopyTo(entity_opt) => {

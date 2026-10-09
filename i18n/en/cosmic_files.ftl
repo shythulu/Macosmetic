@@ -406,6 +406,12 @@ edit = Edit
 cut = Cut
 copy = Copy
 copy-path = Copy path
+copy-path-as = Copy path as
+copy-path-posix = POSIX path
+copy-path-tilde = Path with ~
+copy-path-shell-quoted = Shell-quoted path
+copy-path-file-url = file:// URL
+copy-path-name = Name
 paste = Paste
 select-all = Select all
 
