@@ -144,7 +144,8 @@ block2 = "0.6"
 objc2 = "0.6"
 # Trackpad gestures come from an NSEvent monitor (see src/gesture_macos.rs); the window colour
 # space is set through NSView/NSWindow, and the application lifecycle goes through
-# NSApplication and NSNotificationCenter (see src/appkit_macos.rs).
+# NSApplication and NSNotificationCenter (see src/appkit_macos.rs). Volumes are listed and
+# ejected through NSWorkspace (see src/mounter/macos.rs).
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "bitflags",
@@ -158,6 +159,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSResponder",
     "NSView",
     "NSWindow",
+    "NSWorkspace",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
@@ -173,6 +175,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSString",
     "NSURL",
     "NSUserDefaults",
+    # Volume names and ejectability (src/mounter/macos.rs).
+    "NSValue",
 ] }
 objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = [
     "std",
