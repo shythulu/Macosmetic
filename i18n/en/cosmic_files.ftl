@@ -367,10 +367,6 @@ colour-violet = Violet
 colour-magenta = Magenta
 colour-brown = Brown
 colour-grey = Grey
-folder-appearance = Folder appearance
-icon-set = Icon set
-icon-set-current = Current icon theme
-reset-folder-appearance = Reset to default
 
 ## Settings
 settings = Settings
