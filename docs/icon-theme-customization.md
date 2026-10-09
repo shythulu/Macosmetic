@@ -15,8 +15,26 @@ These started as research notes for whoever implements the feature.
 >   `Config::folder_looks`.
 > - Phase 3c, `.directory` part: `.directory` `Icon=` is read.
 >
-> Stage 2, the theme browsers (Phase 3 and 3b), is not built yet. The rest of this
-> document is the original research and describes `master` as of `da30c9d`.
+> **Status (2026-10-09):** Phase 3 is built on branch `feat/icon-theme-catalog`:
+>
+> - Settings, Icons, Browse... opens the gallery: installed themes on top, the catalog of
+>   34 downloadable themes below, grouped by family, each with a compiled-in preview strip,
+>   licence, download size and a folder-colour count.
+> - Install downloads with `curl` (HTTPS only, size cap, timeouts, Cancel), verifies the
+>   SHA-256 from `res/icon-themes/catalog.json`, and unpacks only the theme directories
+>   under the extraction rules below. Remove and Update work on anything the app installed.
+> - "Install from file..." and drag-and-drop install `.tar.gz`, `.tar.xz`, `.tar.bz2`,
+>   `.tar`, `.zip` archives and unpacked folders. The app never runs a script.
+> - No restart: `cosmic-freedesktop-icons` is vendored in `vendor/freedesktop-icons` with a
+>   `reload_themes()` the app calls after every install, update and removal. That resolves
+>   the restart item in §5.
+> - `install.sh` themes (WhiteSur, Tela, Colloid, Fluent, Reversal, Qogir) come from
+>   `.github/workflows/icon-theme-builds.yml`, which runs the scripts on a Linux runner and
+>   attaches ready-made archives to a release; the workflow is written but has not been run.
+>
+> Phase 3b, the KDE Store browser, is deferred: file install covers KDE Store downloads in
+> two steps. The rest of this document is the original research and describes `master` as
+> of `da30c9d`.
 
 For folder icon sets, folder colour variants and folder-name mappings, see the companion
 survey `docs/folder-icon-libraries.md`.

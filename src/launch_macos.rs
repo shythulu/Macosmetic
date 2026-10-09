@@ -118,6 +118,7 @@ pub fn prepare() {
     if let Err(err) = std::fs::create_dir_all(&icons) {
         log::warn!("failed to create {}: {}", icons.display(), err);
     }
+    crate::icon_theme_catalog::cleanup_staging(&icons);
 
     if env::var_os("LANG").is_none()
         && env::var_os("LC_ALL").is_none()

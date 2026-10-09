@@ -388,6 +388,18 @@ either way. **Nothing depends on `/opt/homebrew` being on `PATH`.**
 
 ---
 
+### 5.6 Where icon themes live [V]
+
+Icon themes the app installs go to `~/.local/share/icons/<id>`, the XDG data home the
+`cosmic-freedesktop-icons` lookup searches, never into the `.app`. A dangling symlink
+inside the bundle breaks `codesign --verify` (5.3), and most themes are built on
+symlinks. `launch_macos::prepare` creates that directory before the first lookup, because
+the lookup only lists directories that exist when it first runs, and removes staging
+directories a crash left behind. Themes the app installed carry a `.macosmetic-catalog`
+marker; anything without one is the user's and is never removed or overwritten. The
+bundle's own `share/icons` (the Cosmic set) sits behind the user's directory on
+`XDG_DATA_DIRS`, so a user theme with the same id wins.
+
 ## 6. FFI, threading, and lifecycle
 
 ### 6.1 The legacy `objc`/`block` crates are on a compile deadline
