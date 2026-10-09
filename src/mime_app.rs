@@ -218,6 +218,16 @@ impl MimeApp {
         self.icon
             .get_or_init(|| {
                 let name = &*self.icon_name;
+                // A macOS entry names its bundle; the icon is rendered from it on first use.
+                #[cfg(target_os = "macos")]
+                if name.ends_with(".app") {
+                    return match crate::workspace_macos::cached_icon(Path::new(name)) {
+                        Some(png) => cosmic::widget::icon::from_path(png),
+                        None => cosmic::widget::icon::from_name("application-x-executable")
+                            .size(32)
+                            .handle(),
+                    };
+                }
                 if name.starts_with('/') {
                     cosmic::widget::icon::from_path(PathBuf::from(name))
                 } else {
@@ -237,16 +247,90 @@ impl AsRef<str> for MimeApp {
 
 pub struct MimeAppCache {
     apps: Vec<Arc<MimeApp>>,
+    #[cfg(not(all(not(feature = "desktop"), target_os = "macos")))]
     cache: FxHashMap<Mime, Vec<Arc<MimeApp>>>,
     terminals: Vec<Arc<MimeApp>>,
+    /// LaunchServices answers, filled one MIME type at a time as they are asked for.
+    #[cfg(all(not(feature = "desktop"), target_os = "macos"))]
+    launch_services: std::sync::Mutex<LaunchServicesCache>,
+}
+
+/// The macOS side of [`MimeAppCache`]. LaunchServices cannot list every type it knows, so
+/// the per-MIME lists are looked up lazily from [`MimeAppCache::get`], which only has
+/// `&self`. The lists are boxed slices that are never dropped or replaced except through
+/// `&mut self`, which is what lets `get` hand out references into them.
+#[cfg(all(not(feature = "desktop"), target_os = "macos"))]
+#[derive(Default)]
+struct LaunchServicesCache {
+    by_mime: FxHashMap<Mime, Box<[Arc<MimeApp>]>>,
+    /// One entry per bundle, so the default marks on an app are shared across MIME types.
+    by_path: FxHashMap<PathBuf, Arc<MimeApp>>,
+}
+
+#[cfg(all(not(feature = "desktop"), target_os = "macos"))]
+impl LaunchServicesCache {
+    fn app(&mut self, bundle: &Path) -> Arc<MimeApp> {
+        if let Some(app) = self.by_path.get(bundle) {
+            return app.clone();
+        }
+        let app = Arc::new(macos_mime_app(bundle, "%F"));
+        self.by_path.insert(bundle.to_path_buf(), app.clone());
+        app
+    }
+
+    /// Ask LaunchServices for `mime` and cache the answer; the default handler comes first.
+    fn lookup(&mut self, mime: &Mime) -> Box<[Arc<MimeApp>]> {
+        use crate::workspace_macos;
+
+        let Some(content_type) = workspace_macos::content_type_for_mime(mime) else {
+            tracing::debug!(target: "mime-apps", mime = mime.essence_str(), "no UTType");
+            return Box::default();
+        };
+        let (bundles, default) = workspace_macos::apps_for_content_type(&content_type);
+        let mut apps: Vec<Arc<MimeApp>> = bundles.iter().map(|bundle| self.app(bundle)).collect();
+        if let Some(default) = default
+            && let Some(position) = bundles.iter().position(|bundle| *bundle == default)
+        {
+            let app = apps.remove(position);
+            app.is_default
+                .write()
+                .unwrap()
+                .insert(mime.essence_str().into());
+            apps.insert(0, app);
+        }
+        tracing::debug!(target: "mime-apps", mime = mime.essence_str(), r#type = %content_type.identifier(), apps = ?(apps.iter().map(|app| &*app.id).collect::<Vec<&str>>()), "LaunchServices handlers");
+        apps.into_boxed_slice()
+    }
+}
+
+/// A [`MimeApp`] for an application bundle. Its exec goes through `/usr/bin/open`, so the
+/// launch path in `app.rs` needs no macOS branch; `files` is the field code the paths go
+/// into, `%F` for documents and `.` for a terminal started in the current directory.
+#[cfg(all(not(feature = "desktop"), target_os = "macos"))]
+fn macos_mime_app(bundle: &Path, files: &str) -> MimeApp {
+    let path = bundle.to_string_lossy();
+    let quoted = shlex::try_quote(&path).map_or_else(|_| path.to_string(), |q| q.into_owned());
+    MimeApp {
+        id: path.to_string(),
+        path: Some(bundle.to_path_buf()),
+        name: crate::workspace_macos::display_name(bundle),
+        exec: Some(format!("/usr/bin/open -a {quoted} {files}")),
+        icon_name: path.into(),
+        icon: std::sync::OnceLock::new(),
+        is_default: Arc::new(RwLock::default()),
+        no_display: Arc::new(AtomicBool::new(false)),
+    }
 }
 
 impl MimeAppCache {
     pub fn new() -> Self {
         let mut mime_app_cache = Self {
             apps: Vec::new(),
+            #[cfg(not(all(not(feature = "desktop"), target_os = "macos")))]
             cache: FxHashMap::default(),
             terminals: Vec::new(),
+            #[cfg(all(not(feature = "desktop"), target_os = "macos"))]
+            launch_services: std::sync::Mutex::default(),
         };
         mime_app_cache.reload();
         mime_app_cache
@@ -314,8 +398,41 @@ impl MimeAppCache {
         results
     }
 
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(all(not(feature = "desktop"), not(target_os = "macos")))]
     pub fn reload(&mut self) {}
+
+    /// Forget the LaunchServices answers and list the installed applications again. The
+    /// per-type lists refill on demand; see [`LaunchServicesCache`].
+    #[cfg(all(not(feature = "desktop"), target_os = "macos"))]
+    pub fn reload(&mut self) {
+        use crate::workspace_macos;
+
+        let start = Instant::now();
+
+        self.apps.clear();
+        self.terminals.clear();
+        let launch_services = self.launch_services.get_mut().unwrap();
+        *launch_services = LaunchServicesCache::default();
+
+        // Everything in the application folders, for the "Other apps" section of Open With.
+        for bundle in workspace_macos::installed_apps() {
+            self.apps.push(launch_services.app(&bundle));
+        }
+        self.apps
+            .sort_by(|a, b| crate::localize::LANGUAGE_SORTER.compare(&a.name, &b.name));
+
+        // Terminal.app, started in the directory `app.rs` sets as the command's cwd.
+        let terminal = workspace_macos::app_for_bundle_id("com.apple.Terminal").or_else(|| {
+            let path = PathBuf::from("/System/Applications/Utilities/Terminal.app");
+            path.is_dir().then_some(path)
+        });
+        if let Some(bundle) = terminal {
+            self.terminals.push(Arc::new(macos_mime_app(&bundle, ".")));
+        }
+
+        let elapsed = start.elapsed();
+        tracing::info!(target: "mime-apps", apps = self.apps.len(), "listed installed applications in {elapsed:?}");
+    }
 
     /// Reload mime types and their known app associations and defaults.
     #[cfg(feature = "desktop")]
@@ -505,16 +622,36 @@ impl MimeAppCache {
         &self.apps
     }
 
+    #[cfg(not(all(not(feature = "desktop"), target_os = "macos")))]
     pub fn get(&self, key: &Mime) -> &[Arc<MimeApp>] {
         self.cache.get(key).map_or(&[], Vec::as_slice)
     }
 
-    pub fn icons(&self, key: &Mime) -> Vec<widget::icon::Handle> {
-        self.cache
-            .get(key)
-            .map_or_else(Vec::new, |apps| apps.iter().map(|app| app.icon()).collect())
+    /// The handlers for `key`, asking LaunchServices the first time a type comes up.
+    #[cfg(all(not(feature = "desktop"), target_os = "macos"))]
+    pub fn get(&self, key: &Mime) -> &[Arc<MimeApp>] {
+        let mut launch_services = self.launch_services.lock().unwrap();
+        if !launch_services.by_mime.contains_key(key) {
+            let apps = launch_services.lookup(key);
+            launch_services.by_mime.insert(key.clone(), apps);
+        }
+        let apps: *const [Arc<MimeApp>] = &*launch_services.by_mime[key];
+        // SAFETY: the pointer targets a boxed slice's heap allocation, which stays put when
+        // the map rehashes. Entries are only dropped or replaced by `reload` and
+        // `set_default`, both `&mut self`, so no reference handed out here can outlive one.
+        unsafe { &*apps }
     }
 
+    pub fn icons(&self, key: &Mime) -> Vec<widget::icon::Handle> {
+        self.get(key).iter().map(|app| app.icon()).collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn get_default_terminal(&self) -> Option<String> {
+        None
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn get_default_terminal(&self) -> Option<String> {
         let output = process::Command::new("xdg-mime")
             .args(["query", "default", "x-scheme-handler/terminal"])
@@ -555,11 +692,50 @@ impl MimeAppCache {
         self.terminals.first()
     }
 
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(all(not(feature = "desktop"), not(target_os = "macos")))]
     pub fn set_default(&mut self, mime: Mime, id: String) {
         log::warn!(
             "failed to set default handler for {mime:?} to {id:?}: desktop feature not enabled"
         );
+    }
+
+    /// Make the bundle at `id` the system default for `mime`, and move it to the front of
+    /// the cached list right away: LaunchServices applies the change asynchronously and
+    /// the dropdown that asked for it is redrawn from this cache.
+    #[cfg(all(not(feature = "desktop"), target_os = "macos"))]
+    pub fn set_default(&mut self, mime: Mime, id: String) {
+        use crate::workspace_macos;
+
+        let bundle = PathBuf::from(&id);
+        let Some(content_type) = workspace_macos::content_type_for_mime(&mime) else {
+            log::warn!("failed to set default handler for {mime}: no UTType for it");
+            return;
+        };
+        if let Err(err) = workspace_macos::set_default_app(&bundle, &content_type) {
+            log::warn!("failed to set default handler for {mime} to {id}: {err}");
+            return;
+        }
+
+        let launch_services = self.launch_services.get_mut().unwrap();
+        let mut apps = launch_services
+            .by_mime
+            .remove(&mime)
+            .map_or_else(Vec::new, Vec::from);
+        for app in &apps {
+            app.is_default.write().unwrap().remove(mime.essence_str());
+        }
+        let app = match apps.iter().position(|app| app.id == id) {
+            Some(position) => apps.remove(position),
+            None => launch_services.app(&bundle),
+        };
+        app.is_default
+            .write()
+            .unwrap()
+            .insert(mime.essence_str().into());
+        apps.insert(0, app);
+        launch_services
+            .by_mime
+            .insert(mime, apps.into_boxed_slice());
     }
 
     #[cfg(feature = "desktop")]
@@ -604,6 +780,96 @@ impl MimeAppCache {
 impl Default for MimeAppCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(all(test, not(feature = "desktop"), target_os = "macos"))]
+mod macos_tests {
+    use super::{Mime, MimeAppCache};
+    use std::path::Path;
+
+    /// What `mime_icon::mime_for_path` reports for a `.txt` file. The detection itself needs
+    /// the shared MIME database, which the test process does not get.
+    fn text_file_mime() -> Mime {
+        "text/plain".parse().expect("valid mime")
+    }
+
+    #[test]
+    fn a_text_file_lists_text_edit_with_the_default_first() {
+        let cache = MimeAppCache::new();
+        let mime = text_file_mime();
+
+        let apps = cache.get(&mime);
+        let text_edit = apps
+            .iter()
+            .find(|app| app.name == "TextEdit")
+            .unwrap_or_else(|| {
+                panic!(
+                    "TextEdit missing from {:?}",
+                    apps.iter().map(|a| &a.name).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            text_edit
+                .exec
+                .as_deref()
+                .unwrap()
+                .starts_with("/usr/bin/open -a ")
+        );
+        assert!(text_edit.id.ends_with("TextEdit.app"));
+
+        let first = apps.first().expect("a default handler for text/plain");
+        assert!(
+            first.is_default(&mime),
+            "{} should be marked default",
+            first.name
+        );
+        assert_eq!(apps.iter().filter(|app| app.is_default(&mime)).count(), 1);
+    }
+
+    #[test]
+    fn an_app_entry_launches_through_open() {
+        let cache = MimeAppCache::new();
+        let mime = text_file_mime();
+        let app = cache.get(&mime).first().expect("a handler").clone();
+        let commands = app
+            .command(&["/tmp/a.txt", "/tmp/b.txt"])
+            .expect("a command");
+        assert_eq!(commands.len(), 1);
+        let command = &commands[0];
+        assert_eq!(command.get_program(), "/usr/bin/open");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "-a");
+        assert_eq!(Path::new(&args[1]), Path::new(&app.id));
+        assert_eq!(&args[2..], ["/tmp/a.txt", "/tmp/b.txt"]);
+    }
+
+    #[test]
+    fn the_terminal_is_terminal_app_started_in_the_current_directory() {
+        let cache = MimeAppCache::new();
+        let terminal = cache.terminal().expect("Terminal.app");
+        assert_eq!(terminal.name, "Terminal");
+        let command = terminal
+            .command::<&str>(&[])
+            .and_then(|v| v.into_iter().next())
+            .expect("a command");
+        assert_eq!(command.get_program(), "/usr/bin/open");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "-a");
+        assert!(args[1].ends_with("Terminal.app"), "{args:?}");
+        assert_eq!(args[2], ".");
+    }
+
+    #[test]
+    fn installed_applications_are_listed_for_the_other_apps_section() {
+        let cache = MimeAppCache::new();
+        assert!(cache.apps().iter().any(|app| app.name == "TextEdit"));
     }
 }
 

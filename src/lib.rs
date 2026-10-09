@@ -55,6 +55,8 @@ mod thumbnailer;
 pub(crate) mod trash;
 #[cfg(target_os = "macos")]
 pub(crate) mod trash_macos;
+#[cfg(target_os = "macos")]
+pub(crate) mod workspace_macos;
 mod zoom;
 
 pub(crate) type FxOrderMap<K, V> = ordermap::OrderMap<K, V, rustc_hash::FxBuildHasher>;
