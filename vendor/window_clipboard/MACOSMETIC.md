@@ -39,13 +39,11 @@ platform files are untouched.
 
 ## Requirement on libcosmic
 
-`iced/winit/src/clipboard.rs` in libcosmic calls `init_dnd` only under
-`#[cfg(wayland_platform)]`. Without that call this backend has no channel to
-iced and logs "iced never called init_dnd on this platform". The
-`shythulu/libcosmic` branch `macosmetic` needs that `cfg` line removed:
-`libcosmic-init-dnd.patch` in this directory is the diff. Until it lands and
-the lock moves to it, drag and drop stays dead on macOS even with this
-backend built in.
+The `shythulu/iced` branch `macosmetic` initializes the event sender on macOS
+as well as Wayland. `shythulu/libcosmic` points its iced submodule at that fork,
+and the app's lockfile pins the updated libcosmic revision. This connects the
+backend to iced; without it the backend logs "iced never called init_dnd on
+this platform". `libcosmic-init-dnd.patch` records the original proposed fix.
 
 ## Tests
 

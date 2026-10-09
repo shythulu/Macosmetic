@@ -10,6 +10,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  macos:
+    name: cosmic-files - macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: cargo test --locked --lib
+      - run: cargo check --locked --no-default-features
   test:
     name: cosmic-files - latest
     runs-on: ubuntu-latest
