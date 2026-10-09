@@ -306,11 +306,15 @@ search-application = Search by app name
 ## Show details
 show-details = Show details
 type = Type: {$mime}
+item-kind = Kind: {$kind}
+item-where = Where: {$path}
+item-version = Version: {$version}
 items = Items: {$items}
 item-size = Size: {$size}
 item-created = Created: {$created}
 item-modified = Modified: {$modified}
 item-accessed = Accessed: {$accessed}
+item-added = Date added: {$added}
 calculating = Calculating...
 checksum = {$kind} checksum
 calculate = Calculate

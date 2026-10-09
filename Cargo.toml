@@ -162,6 +162,10 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "block2",
+    # Get Info: an app's version (src/get_info_macos.rs).
+    "NSBundle",
+    # Get Info: Date Added (src/get_info_macos.rs).
+    "NSDate",
     "NSDictionary",
     "NSError",
     "NSGeometry",

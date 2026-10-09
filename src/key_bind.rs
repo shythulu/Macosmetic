@@ -160,8 +160,9 @@ pub fn cmd_key_binds(mode: &tab::Mode) -> HashMap<KeyBind, Action> {
     // where there is nothing to rename; the app and desktop section below rebinds it.
     bind!([], Key::Named(Named::Enter), Open);
     bind!([Super], Key::Named(Named::ArrowDown), Open);
-    // Cmd+Space belongs to Spotlight, so preview and gallery keep the keys they have elsewhere.
-    bind!([Ctrl], Key::Character(" ".into()), Preview);
+    // Finder's Get Info. Ctrl+Space, the key details have elsewhere, is macOS's input source
+    // switcher, and Cmd+Space belongs to Spotlight. Space alone opens the gallery, as Quick Look.
+    bind!([Super], Key::Character("i".into()), Preview);
     bind!([], Key::Character(" ".into()), Gallery);
 
     bind!([Super, Shift], Key::Character(".".into()), ToggleShowHidden);
@@ -1249,6 +1250,7 @@ mod tests {
             ("Cmd+n", Action::WindowNew),
             ("Cmd+t", Action::TabNew),
             ("Cmd+f", Action::SearchActivate),
+            ("Cmd+i", Action::Preview),
             ("Enter", Action::Rename),
             ("F2", Action::Rename),
             ("Cmd+=", Action::ZoomIn),
