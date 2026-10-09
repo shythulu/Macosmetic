@@ -372,6 +372,10 @@ install-from-file = Install from file...
 install-theme-title = Install icon theme
 icon-theme-archives = Icon theme archives
 drop-theme-hint = Drop a theme archive or folder here to install it.
+folder-colours-count = {$count ->
+    [one] 1 colour
+   *[other] {$count} colours
+}
 downloading-progress = Downloading {$done} of {$total}
 extracting-theme = Extracting...
 theme-install-failed-network = Could not reach {$host}. Check your connection and try again.

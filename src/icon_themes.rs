@@ -158,6 +158,17 @@ pub fn installed_themes_in(base_dirs: &[PathBuf]) -> Vec<IconThemeInfo> {
 /// Open, drag and symbolic variants are left out: those are states of a folder,
 /// not looks for one. `folder` comes first, then the rest alphabetically.
 pub fn folder_icon_names(theme: &IconThemeInfo) -> Vec<String> {
+    let mut names = without_colour_variants(all_folder_icon_names(theme));
+    if let Some(index) = names.iter().position(|name| name == "folder") {
+        let folder = names.remove(index);
+        names.insert(0, folder);
+    }
+    names
+}
+
+/// Every folder-like icon name in the theme's `places` directories, sorted, colour
+/// variants included.
+fn all_folder_icon_names(theme: &IconThemeInfo) -> Vec<String> {
     let mut names = Vec::new();
     for root in &theme.roots {
         for directory in &theme.directories {
@@ -187,12 +198,24 @@ pub fn folder_icon_names(theme: &IconThemeInfo) -> Vec<String> {
     }
     names.sort_unstable();
     names.dedup();
-    let mut names = without_colour_variants(names);
-    if let Some(index) = names.iter().position(|name| name == "folder") {
-        let folder = names.remove(index);
-        names.insert(0, folder);
-    }
     names
+}
+
+/// How many folder colours `theme` ships: one per `folder-<colour>-documents` icon, the
+/// way papirus-folders finds a theme's colours.
+pub fn folder_colours(theme: &IconThemeInfo) -> usize {
+    let names = all_folder_icon_names(theme);
+    colour_names(&names).len()
+}
+
+fn colour_names(names: &[String]) -> Vec<&str> {
+    let mut colours: Vec<&str> = names
+        .iter()
+        .filter_map(|name| name.strip_prefix("folder-")?.strip_suffix("-documents"))
+        .collect();
+    colours.sort_unstable();
+    colours.dedup();
+    colours
 }
 
 /// Drops coloured copies of other icons, such as Papirus' `folder-red-documents`.
@@ -201,10 +224,7 @@ pub fn folder_icon_names(theme: &IconThemeInfo) -> Vec<String> {
 /// a theme's colours. The plain `folder-X` stays, so each colour is still offered once;
 /// colours themselves are better picked from the colour row, which works in any theme.
 fn without_colour_variants(names: Vec<String>) -> Vec<String> {
-    let colours: Vec<&str> = names
-        .iter()
-        .filter_map(|name| name.strip_prefix("folder-")?.strip_suffix("-documents"))
-        .collect();
+    let colours = colour_names(&names);
     let is_variant = |name: &str| {
         colours.iter().any(|colour| {
             ["folder-", "user-"].iter().any(|prefix| {
@@ -373,6 +393,11 @@ mod tests {
         write(&base.join("T/48x48/apps/folder-app.svg"), "");
 
         let theme = &installed_themes_in(std::slice::from_ref(&base))[0];
+        assert_eq!(folder_colours(theme), 0);
+        write(&base.join("T/48x48/places/folder-red-documents.svg"), "");
+        write(&base.join("T/48x48/places/folder-blue-documents.svg"), "");
+        write(&base.join("T/scalable/Places/folder-blue-documents.svg"), "");
+        assert_eq!(folder_colours(theme), 2);
         assert_eq!(
             folder_icon_names(theme),
             [

@@ -80,6 +80,8 @@ pub struct Gallery {
     installed_previews: Vec<Vec<icon::Handle>>,
     /// Parallel to the installed themes: the marker of each theme this app installed.
     markers: Vec<Option<Marker>>,
+    /// Parallel to the installed themes: how many folder colours each ships.
+    installed_colours: Vec<usize>,
     /// Parallel to the catalog's themes; built once, since they are compiled in.
     catalog_previews: Vec<Vec<icon::Handle>>,
     /// Installed themes whose catalog archive has moved on since they were installed.
@@ -119,6 +121,7 @@ impl Gallery {
             .map(|theme| theme.id.clone())
             .collect();
         self.hidden_installed = icon_theme_catalog::installed_ids();
+        self.installed_colours = themes.iter().map(crate::icon_themes::folder_colours).collect();
     }
 
     /// Whether an install is running, which keeps the other Install buttons disabled: one at
@@ -184,6 +187,7 @@ impl Gallery {
                 widget::text::heading(info.name.as_str()).into(),
                 widget::space::horizontal().into(),
             ];
+            title.extend(colours_badge(self.installed_colours.get(index).copied().unwrap_or(0)));
             match self.installs.get(&info.id) {
                 Some(InstallState::Installing { step, cancel: _ }) => {
                     title.push(progress_control(*step, &info.id));
@@ -291,7 +295,14 @@ impl Gallery {
             children.push(widget::space::vertical().height(space_m).into());
             children.push(widget::text::heading(fl!("available-icon-themes")).into());
             children.push(widget::text::caption(fl!("available-icon-themes-description")).into());
+            let mut family = None;
             for (index, theme) in available {
+                // The catalog keeps a repository's variants together, so one heading each.
+                if family != Some(theme.family.as_str()) {
+                    family = Some(theme.family.as_str());
+                    children.push(widget::space::vertical().height(space_xs).into());
+                    children.push(widget::text::title4(theme.family.as_str()).into());
+                }
                 children.push(self.available_card(theme, index, &installed, space_xs, space_s));
             }
         }
@@ -348,15 +359,17 @@ impl Gallery {
                 )
                 .into(),
         };
+        let mut title = vec![
+            widget::text::heading(theme.name.as_str()).into(),
+            widget::space::horizontal().into(),
+        ];
+        title.extend(colours_badge(theme.folder_colours));
+        title.push(control);
         let mut rows = vec![
-            widget::row::with_children(vec![
-                widget::text::heading(theme.name.as_str()).into(),
-                widget::space::horizontal().into(),
-                control,
-            ])
-            .align_y(Alignment::Center)
-            .spacing(space_xs)
-            .into(),
+            widget::row::with_children(title)
+                .align_y(Alignment::Center)
+                .spacing(space_xs)
+                .into(),
         ];
         match state {
             Some(InstallState::Installing { step, .. }) => {
@@ -400,6 +413,12 @@ impl Gallery {
         }
         rows
     }
+}
+
+/// "N colours" for a theme with folder colour variants, which the per-folder Customize
+/// page can offer; nothing for a theme without.
+fn colours_badge<'a>(count: usize) -> Option<Element<'a, Message>> {
+    (count > 0).then(|| widget::text::caption(fl!("folder-colours-count", count = count)).into())
 }
 
 /// A progress bar with a Cancel button beside it.

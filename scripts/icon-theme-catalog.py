@@ -12,7 +12,9 @@ Reads res/icon-themes/sources.json, downloads every archive it names once, and w
 
 Each source is a GitHub repository pinned to a tag or commit (downloaded from codeload), or a
 release asset given by `url`. Theme paths are relative to the archive's single top-level
-directory for codeload archives, and to the archive root for release assets.
+directory for codeload archives, and to the archive root for release assets. An optional
+`family` groups a source's themes under one heading in the gallery; it defaults to the
+repository name.
 
 Archives are cached in ~/Library/Caches/macosmetic-icon-themes (or $XDG_CACHE_HOME), so a
 rerun after editing sources.json only downloads what changed.
@@ -24,6 +26,7 @@ import hashlib
 import json
 import os
 import posixpath
+import re
 import shutil
 import sys
 import tarfile
@@ -196,6 +199,29 @@ class Theme:
         self.index_theme = index_path if "index_theme" in spec else None
         self.source = source
 
+    def folder_colours(self):
+        """How many folder colours the theme ships, counted the way the app counts them: one
+        per `folder-<colour>-documents` icon in its places directories."""
+        colours = set()
+        for directory in self.dirs:
+            if "places" not in directory.lower().split("/"):
+                continue
+            # A variant's places directory is often a symlink into its base theme.
+            canonical = self.archive.canonical(posixpath.join(self.root, directory))
+            if canonical is None:
+                continue
+            prefix = canonical + "/"
+            for name in self.archive.members:
+                if not name.startswith(prefix) or "/" in name[len(prefix):]:
+                    continue
+                stem, dot, extension = posixpath.basename(name).rpartition(".")
+                if extension not in ("svg", "png"):
+                    continue
+                match = re.fullmatch(r"folder-(.+)-documents", stem)
+                if match:
+                    colours.add(match.group(1))
+        return len(colours)
+
     def find(self, name):
         """The archive member holding icon `name` in this theme alone, best size first."""
         ordered = sorted(self.dirs.items(), key=lambda item: size_distance(item[1]))
@@ -281,11 +307,13 @@ def main():
         entry = {
             "id": theme.id,
             "name": theme.name,
+            "family": theme.source.get("family") or theme.source["repo"].split("/")[1],
             "license": theme.source["license"],
             "homepage": f"https://github.com/{theme.source['repo']}",
             "archive": theme.archive_index,
             "path": theme.root,
             "requires": requires,
+            "folder_colours": theme.folder_colours(),
             "previews": previews,
         }
         if theme.index_theme:

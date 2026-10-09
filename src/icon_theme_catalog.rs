@@ -67,6 +67,9 @@ pub struct CatalogTheme {
     /// Directory name, the value stored in the toolkit config.
     pub id: String,
     pub name: String,
+    /// The heading the gallery lists the theme under, shared by a repository's variants.
+    #[serde(default)]
+    pub family: String,
     pub license: String,
     pub homepage: String,
     /// Index into [`Catalog::archives`].
@@ -78,6 +81,9 @@ pub struct CatalogTheme {
     pub index_theme: Option<String>,
     /// Catalog themes that have to be installed beside this one, dependencies first.
     pub requires: Vec<String>,
+    /// Folder colours the theme ships, counted as `icon_themes::folder_colours` does.
+    #[serde(default)]
+    pub folder_colours: usize,
     /// Preview file names under `res/icon-themes/previews/<id>/`.
     pub previews: Vec<String>,
 }
