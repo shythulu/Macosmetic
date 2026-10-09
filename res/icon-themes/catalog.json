@@ -1,0 +1,792 @@
+{
+  "version": 1,
+  "archives": [
+    {
+      "url": "https://codeload.github.com/GNOME/adwaita-icon-theme/tar.gz/51.0",
+      "sha256": "adda5270c67ecdeb9604d24202fd8558b193379f9a9488179591cd4cdd99593b",
+      "size": 7141204
+    },
+    {
+      "url": "https://codeload.github.com/somepaulo/MoreWaita/tar.gz/v50.1",
+      "sha256": "000e858d346e64bfdb87fb305e8046e09f5554385cf9c213fe648887fe218940",
+      "size": 11076721
+    },
+    {
+      "url": "https://codeload.github.com/PapirusDevelopmentTeam/papirus-icon-theme/tar.gz/20260801",
+      "sha256": "646f622e9e7e9e65eef9d0ab58999d4920ddb33d98e6a75232627cfe3bd508f9",
+      "size": 33053628
+    },
+    {
+      "url": "https://codeload.github.com/bikass/kora/tar.gz/v2.0.6",
+      "sha256": "159bdb7a09409a12e54a71136ec8889c51b0bf7c145c8b20e3509dc1e90089bd",
+      "size": 6135730
+    },
+    {
+      "url": "https://codeload.github.com/numixproject/numix-icon-theme/tar.gz/25.12.15",
+      "sha256": "20db3921eecb024139dbf0c20b32101b48f464a56c5072cb2fd7d41581e1816d",
+      "size": 4140723
+    },
+    {
+      "url": "https://codeload.github.com/numixproject/numix-icon-theme-circle/tar.gz/26.02.21",
+      "sha256": "0a64821bc9ce005be4d2d2786bcbbfb0e908932e1c3c4cf65859da2cccd598ba",
+      "size": 2647053
+    },
+    {
+      "url": "https://codeload.github.com/daniruiz/flat-remix/tar.gz/e7de6c346da46e008987228f363b0eae6e638637",
+      "sha256": "f6283da10789e61c1ee2c8e6e3118f8fd48303aabe9216b9e937ede09b3d8915",
+      "size": 113456972
+    },
+    {
+      "url": "https://codeload.github.com/SylEleuth/gruvbox-plus-icon-pack/tar.gz/v6.6.0",
+      "sha256": "053d3985d326b4e5d6ba47890931b81a0de093c7d0cb5c798ab4be032f56b57f",
+      "size": 20812550
+    },
+    {
+      "url": "https://codeload.github.com/EliverLara/candy-icons/tar.gz/83512fbcadcb7e1015ebbe1729a1894946b021be",
+      "sha256": "1de25126c50da4edf4b49623993c1ca5f626d5be1020e5bd1b1c683cd724721b",
+      "size": 2194636
+    },
+    {
+      "url": "https://codeload.github.com/EliverLara/Sweet-folders/tar.gz/40a5d36e50437901c7eaa1119bb9ae8006e2fe5c",
+      "sha256": "386f66922f9811e42a2b1e4018d5f43f759cb5d778c74345a1483d6c076402e5",
+      "size": 1539116
+    },
+    {
+      "url": "https://codeload.github.com/keeferrourke/la-capitaine-icon-theme/tar.gz/v0.6.2",
+      "sha256": "e63e4bc97a7bbf4db71f17fa3b1c71086e3ed8b1dc44b4d10f95d97aa7db2c9d",
+      "size": 11110830
+    },
+    {
+      "url": "https://codeload.github.com/zayronxio/Zafiro-icons/tar.gz/1.3",
+      "sha256": "d4e81453d050ae07b157c65e388e748639a711afc1a6d1b033bdfdd90230ecb7",
+      "size": 18400435
+    },
+    {
+      "url": "https://codeload.github.com/madmaxms/iconpack-obsidian/tar.gz/v4.15",
+      "sha256": "54cdd9887db3b35305af5b1ee6d60b94740a61239b890eb32909baddea17731e",
+      "size": 71019938
+    },
+    {
+      "url": "https://codeload.github.com/snwh/paper-icon-theme/tar.gz/aa3e8af7a1f0831a51fd7e638a4acb077a1e5188",
+      "sha256": "ad76f45266693666df43fab5a381a60899de99e21a85961fa24d60f4cb639b27",
+      "size": 48552738
+    },
+    {
+      "url": "https://github.com/MolassesLover/Nordzy-icon/releases/download/1.8.7/Nordzy.tar.gz",
+      "sha256": "38c346bc4de165b79d5b678284b63cc0fa058dccea29ec1b6fabea7117d7b8ad",
+      "size": 5746966
+    },
+    {
+      "url": "https://github.com/MolassesLover/Nordzy-icon/releases/download/1.8.7/Nordzy-dark.tar.gz",
+      "sha256": "ad752b5ce70577408431734fc8004f928a00027a8fce6dd131ae2d0c3dc82069",
+      "size": 6687104
+    }
+  ],
+  "themes": [
+    {
+      "id": "Adwaita",
+      "name": "Adwaita",
+      "license": "LGPL-3.0-or-later OR CC-BY-SA-3.0",
+      "homepage": "https://github.com/GNOME/adwaita-icon-theme",
+      "archive": 0,
+      "path": "adwaita-icon-theme-51.0/Adwaita",
+      "requires": [],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ],
+      "index_theme": "adwaita-icon-theme-51.0/index.theme"
+    },
+    {
+      "id": "MoreWaita",
+      "name": "MoreWaita",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/somepaulo/MoreWaita",
+      "archive": 1,
+      "path": "MoreWaita-50.1",
+      "requires": [
+        "Adwaita"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Papirus",
+      "name": "Papirus",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/PapirusDevelopmentTeam/papirus-icon-theme",
+      "archive": 2,
+      "path": "papirus-icon-theme-20260801/Papirus",
+      "requires": [],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Papirus-Dark",
+      "name": "Papirus-Dark",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/PapirusDevelopmentTeam/papirus-icon-theme",
+      "archive": 2,
+      "path": "papirus-icon-theme-20260801/Papirus-Dark",
+      "requires": [
+        "Papirus"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Papirus-Light",
+      "name": "Papirus-Light",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/PapirusDevelopmentTeam/papirus-icon-theme",
+      "archive": 2,
+      "path": "papirus-icon-theme-20260801/Papirus-Light",
+      "requires": [
+        "Papirus"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "kora",
+      "name": "Kora",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/bikass/kora",
+      "archive": 3,
+      "path": "kora-2.0.6/kora",
+      "requires": [],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "kora-pgrey",
+      "name": "Kora Grey",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/bikass/kora",
+      "archive": 3,
+      "path": "kora-2.0.6/kora-pgrey",
+      "requires": [
+        "kora"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Numix",
+      "name": "Numix",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/numixproject/numix-icon-theme",
+      "archive": 4,
+      "path": "numix-icon-theme-25.12.15/Numix",
+      "requires": [
+        "Adwaita"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Numix-Light",
+      "name": "Numix Light",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/numixproject/numix-icon-theme",
+      "archive": 4,
+      "path": "numix-icon-theme-25.12.15/Numix-Light",
+      "requires": [
+        "Numix"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Numix-Circle",
+      "name": "Numix Circle",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/numixproject/numix-icon-theme-circle",
+      "archive": 5,
+      "path": "numix-icon-theme-circle-26.02.21/Numix-Circle",
+      "requires": [
+        "Numix"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Numix-Circle-Light",
+      "name": "Numix Circle Light",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/numixproject/numix-icon-theme-circle",
+      "archive": 5,
+      "path": "numix-icon-theme-circle-26.02.21/Numix-Circle-Light",
+      "requires": [
+        "Numix-Light",
+        "Numix-Circle"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Flat-Remix-Blue-Dark",
+      "name": "Flat-Remix-Blue-Dark",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/daniruiz/flat-remix",
+      "archive": 6,
+      "path": "flat-remix-e7de6c346da46e008987228f363b0eae6e638637/Flat-Remix-Blue-Dark",
+      "requires": [
+        "Adwaita"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Flat-Remix-Blue-Light",
+      "name": "Flat-Remix-Blue-Light",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/daniruiz/flat-remix",
+      "archive": 6,
+      "path": "flat-remix-e7de6c346da46e008987228f363b0eae6e638637/Flat-Remix-Blue-Light",
+      "requires": [
+        "Adwaita",
+        "Flat-Remix-Blue-Dark"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Flat-Remix-Green-Dark",
+      "name": "Flat-Remix-Green-Dark",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/daniruiz/flat-remix",
+      "archive": 6,
+      "path": "flat-remix-e7de6c346da46e008987228f363b0eae6e638637/Flat-Remix-Green-Dark",
+      "requires": [
+        "Adwaita"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Flat-Remix-Red-Dark",
+      "name": "Flat-Remix-Red-Dark",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/daniruiz/flat-remix",
+      "archive": 6,
+      "path": "flat-remix-e7de6c346da46e008987228f363b0eae6e638637/Flat-Remix-Red-Dark",
+      "requires": [
+        "Adwaita"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Flat-Remix-Violet-Dark",
+      "name": "Flat-Remix-Violet-Dark",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/daniruiz/flat-remix",
+      "archive": 6,
+      "path": "flat-remix-e7de6c346da46e008987228f363b0eae6e638637/Flat-Remix-Violet-Dark",
+      "requires": [
+        "Adwaita"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Flat-Remix-Grey-Dark",
+      "name": "Flat-Remix-Grey-Dark",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/daniruiz/flat-remix",
+      "archive": 6,
+      "path": "flat-remix-e7de6c346da46e008987228f363b0eae6e638637/Flat-Remix-Grey-Dark",
+      "requires": [
+        "Adwaita"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Flat-Remix-Grey-Light",
+      "name": "Flat-Remix-Grey-Light",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/daniruiz/flat-remix",
+      "archive": 6,
+      "path": "flat-remix-e7de6c346da46e008987228f363b0eae6e638637/Flat-Remix-Grey-Light",
+      "requires": [
+        "Adwaita",
+        "Flat-Remix-Grey-Dark"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Gruvbox-Plus-Dark",
+      "name": "Gruvbox Plus Dark",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/SylEleuth/gruvbox-plus-icon-pack",
+      "archive": 7,
+      "path": "gruvbox-plus-icon-pack-6.6.0/Gruvbox-Plus-Dark",
+      "requires": [],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Gruvbox-Plus-Light",
+      "name": "Gruvbox Plus Light",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/SylEleuth/gruvbox-plus-icon-pack",
+      "archive": 7,
+      "path": "gruvbox-plus-icon-pack-6.6.0/Gruvbox-Plus-Light",
+      "requires": [
+        "Gruvbox-Plus-Dark"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "candy-icons",
+      "name": "candy-icons",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/EliverLara/candy-icons",
+      "archive": 8,
+      "path": "candy-icons-83512fbcadcb7e1015ebbe1729a1894946b021be",
+      "requires": [
+        "Adwaita"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Sweet-Rainbow",
+      "name": "Sweet-Rainbow",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/EliverLara/Sweet-folders",
+      "archive": 9,
+      "path": "Sweet-folders-40a5d36e50437901c7eaa1119bb9ae8006e2fe5c/Sweet-Rainbow",
+      "requires": [
+        "candy-icons"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Sweet-Blue",
+      "name": "Sweet-Blue",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/EliverLara/Sweet-folders",
+      "archive": 9,
+      "path": "Sweet-folders-40a5d36e50437901c7eaa1119bb9ae8006e2fe5c/Sweet-Blue",
+      "requires": [
+        "candy-icons"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Sweet-Purple",
+      "name": "Sweet-Purple",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/EliverLara/Sweet-folders",
+      "archive": 9,
+      "path": "Sweet-folders-40a5d36e50437901c7eaa1119bb9ae8006e2fe5c/Sweet-Purple",
+      "requires": [
+        "candy-icons"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Sweet-Teal",
+      "name": "Sweet-Teal",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/EliverLara/Sweet-folders",
+      "archive": 9,
+      "path": "Sweet-folders-40a5d36e50437901c7eaa1119bb9ae8006e2fe5c/Sweet-Teal",
+      "requires": [
+        "candy-icons"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "La-Capitaine",
+      "name": "La Capitaine",
+      "license": "GPL-3.0-or-later",
+      "homepage": "https://github.com/keeferrourke/la-capitaine-icon-theme",
+      "archive": 10,
+      "path": "la-capitaine-icon-theme-0.6.2",
+      "requires": [],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Zafiro-icons-Dark",
+      "name": "Zafiro-icons-Dark",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/zayronxio/Zafiro-icons",
+      "archive": 11,
+      "path": "Zafiro-icons-1.3/Dark",
+      "requires": [
+        "Numix",
+        "Numix-Circle"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Zafiro-icons-Light",
+      "name": "Zafiro-icons-Light",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/zayronxio/Zafiro-icons",
+      "archive": 11,
+      "path": "Zafiro-icons-1.3/Light",
+      "requires": [
+        "Numix",
+        "Numix-Circle-Light",
+        "Numix-Circle"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Obsidian",
+      "name": "Obsidian",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/madmaxms/iconpack-obsidian",
+      "archive": 12,
+      "path": "iconpack-obsidian-4.15/Obsidian",
+      "requires": [],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Obsidian-Aqua",
+      "name": "Obsidian-Aqua",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/madmaxms/iconpack-obsidian",
+      "archive": 12,
+      "path": "iconpack-obsidian-4.15/Obsidian-Aqua",
+      "requires": [
+        "Obsidian"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Obsidian-Sand",
+      "name": "Obsidian-Sand",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/madmaxms/iconpack-obsidian",
+      "archive": 12,
+      "path": "iconpack-obsidian-4.15/Obsidian-Sand",
+      "requires": [
+        "Obsidian"
+      ],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Paper",
+      "name": "Paper",
+      "license": "CC-BY-SA-4.0",
+      "homepage": "https://github.com/snwh/paper-icon-theme",
+      "archive": 13,
+      "path": "paper-icon-theme-aa3e8af7a1f0831a51fd7e638a4acb077a1e5188/Paper",
+      "requires": [
+        "Adwaita"
+      ],
+      "previews": [
+        "0.png",
+        "1.png",
+        "2.png",
+        "3.png",
+        "4.png",
+        "5.png",
+        "6.png",
+        "7.png"
+      ]
+    },
+    {
+      "id": "Nordzy",
+      "name": "Nordzy",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/MolassesLover/Nordzy-icon",
+      "archive": 14,
+      "path": "Nordzy",
+      "requires": [],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    },
+    {
+      "id": "Nordzy-dark",
+      "name": "Nordzy-dark",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/MolassesLover/Nordzy-icon",
+      "archive": 15,
+      "path": "Nordzy-dark",
+      "requires": [],
+      "previews": [
+        "0.svg",
+        "1.svg",
+        "2.svg",
+        "3.svg",
+        "4.svg",
+        "5.svg",
+        "6.svg",
+        "7.svg"
+      ]
+    }
+  ]
+}

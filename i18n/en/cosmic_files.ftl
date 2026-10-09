@@ -356,6 +356,16 @@ dark = Dark
 light = Light
 icon-theme = Icons
 icon-themes = Icon themes
+installed-icon-themes = Installed
+available-icon-themes = Available to download
+available-icon-themes-description = Each theme comes from its own GitHub repository. A newly installed theme can be used after a restart.
+install = Install
+retry = Retry
+restart-to-use = Restart to use
+icon-theme-download-size = {$size} download
+icon-theme-also-installs = also installs {$names}
+icon-theme-install-failed = Install failed: {$error}
+icon-theme-source = Source
 
 ### Type to search
 type-to-search = Type to search

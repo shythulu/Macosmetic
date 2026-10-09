@@ -42,7 +42,7 @@ use notify_debouncer_full::{DebouncedEvent, Debouncer, RecommendedCache, new_deb
 use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::Key as SlotMapKey;
 use std::any::TypeId;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
@@ -69,6 +69,7 @@ use crate::dialog::{
 };
 use crate::folder_appearance::FolderAppearance;
 use crate::folder_look::{self, FolderLook};
+use crate::icon_theme_catalog;
 use crate::icon_theme_gallery;
 use crate::icon_themes::{self, IconThemeInfo};
 use crate::key_bind::key_binds_with_overrides;
@@ -430,6 +431,10 @@ pub enum Message {
     FolderLookSet(Option<FolderLook>),
     /// Use the installed icon theme at this index of the settings list.
     IconTheme(usize),
+    IconThemeInstall(String),
+    IconThemeInstallEvent(icon_theme_catalog::InstallEvent),
+    IconThemeRemove(String),
+    IconThemeRemoved(String, Result<(), String>),
     DialogPush(DialogPage, Option<widget::Id>),
     DialogUpdate(DialogPage),
     DialogUpdateComplete(DialogPage),
@@ -507,6 +512,8 @@ pub enum Message {
     Preview(Option<Entity>),
     /// Leave, once the pending operations have finished.
     Quit,
+    /// Start a new instance and quit this one.
+    Restart,
     ReloadMimeAppCache,
     /// The application was brought to the front, which on macOS is how a click on the Dock icon
     /// asks for a window back.
@@ -826,8 +833,8 @@ pub struct App {
     app_themes: Vec<String>,
     /// Installed icon themes for the settings list, and their display names.
     icon_themes: Vec<IconThemeInfo>,
-    /// Each installed theme's preview strip for the gallery, parallel to `icon_themes`.
-    icon_theme_previews: Vec<Vec<widget::icon::Handle>>,
+    /// The icon theme gallery's previews and downloads.
+    icon_theme_gallery: icon_theme_gallery::Gallery,
     /// The icon theme the app's icons were last built with.
     icon_theme: String,
     folder_appearance: Option<FolderAppearance>,
@@ -2727,7 +2734,7 @@ impl Application for App {
             mode: flags.mode,
             app_themes,
             icon_themes: Vec::new(),
-            icon_theme_previews: Vec::new(),
+            icon_theme_gallery: icon_theme_gallery::Gallery::default(),
             icon_theme: cosmic::icon_theme::default(),
             folder_appearance: None,
             compio_tx,
@@ -3382,6 +3389,86 @@ impl Application for App {
                     return self.icon_theme_changed();
                 }
             }
+            Message::IconThemeInstall(id) => {
+                let installed: HashSet<String> = self
+                    .icon_themes
+                    .iter()
+                    .map(|theme| theme.id.clone())
+                    .collect();
+                let plan = icon_theme_catalog::install_plan(&id, &installed);
+                if plan.is_empty() {
+                    return Task::none();
+                }
+                self.icon_theme_gallery
+                    .installs
+                    .insert(id.clone(), icon_theme_gallery::InstallState::Installing(0.0));
+                let (tx, rx) = cosmic::iced::futures::channel::mpsc::unbounded();
+                std::thread::spawn(move || {
+                    icon_theme_catalog::install(id, plan, |event| {
+                        let _ = tx.unbounded_send(event);
+                    });
+                });
+                return Task::run(rx, |event| {
+                    cosmic::action::app(Message::IconThemeInstallEvent(event))
+                });
+            }
+            Message::IconThemeInstallEvent(event) => {
+                let gallery = &mut self.icon_theme_gallery;
+                match event {
+                    icon_theme_catalog::InstallEvent::Progress(id, progress) => {
+                        gallery
+                            .installs
+                            .insert(id, icon_theme_gallery::InstallState::Installing(progress));
+                    }
+                    icon_theme_catalog::InstallEvent::Installed(id, ids) => {
+                        gallery.installs.remove(&id);
+                        gallery.needs_restart.extend(ids);
+                        self.load_icon_themes();
+                        self.icon_theme_gallery.refresh(&self.icon_themes);
+                    }
+                    icon_theme_catalog::InstallEvent::Failed(id, error) => {
+                        gallery
+                            .installs
+                            .insert(id, icon_theme_gallery::InstallState::Failed(error));
+                        // Part of the plan may have landed before the failure.
+                        self.load_icon_themes();
+                        self.icon_theme_gallery.refresh(&self.icon_themes);
+                    }
+                }
+            }
+            Message::IconThemeRemove(id) => {
+                if id == self.icon_theme {
+                    return Task::none();
+                }
+                return Task::future(async move {
+                    let (tx, rx) = cosmic::iced::futures::channel::oneshot::channel();
+                    let removing = id.clone();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(
+                            icon_theme_catalog::remove(&removing).map_err(|err| err.to_string()),
+                        );
+                    });
+                    let result = rx
+                        .await
+                        .unwrap_or_else(|_| Err("removal was interrupted".to_string()));
+                    cosmic::action::app(Message::IconThemeRemoved(id, result))
+                });
+            }
+            Message::IconThemeRemoved(id, result) => {
+                if let Err(err) = result {
+                    log::warn!("failed to remove icon theme {id}: {err}");
+                }
+                self.icon_theme_gallery.needs_restart.remove(&id);
+                self.load_icon_themes();
+                self.icon_theme_gallery.refresh(&self.icon_themes);
+            }
+            Message::Restart => match env::current_exe() {
+                Ok(exe) => match process::Command::new(&exe).args(env::args_os().skip(1)).spawn() {
+                    Ok(_child) => return self.update(Message::Quit),
+                    Err(err) => log::error!("failed to restart {}: {err}", exe.display()),
+                },
+                Err(err) => log::error!("failed to find the executable to restart: {err}"),
+            },
             Message::ToolkitConfig(config) => {
                 if config.icon_theme != self.icon_theme {
                     // libcosmic applies this too; doing it here first means the rebuild
@@ -5216,11 +5303,7 @@ impl Application for App {
                     ContextPage::Settings => self.load_icon_themes(),
                     ContextPage::IconThemes => {
                         self.load_icon_themes();
-                        self.icon_theme_previews = self
-                            .icon_themes
-                            .iter()
-                            .map(icon_theme_gallery::previews)
-                            .collect();
+                        self.icon_theme_gallery.refresh(&self.icon_themes);
                     }
                     _ => {}
                 }
@@ -6025,11 +6108,8 @@ impl Application for App {
             )
             .title(fl!("folder-appearance")),
             ContextPage::IconThemes => context_drawer::context_drawer(
-                icon_theme_gallery::view(
-                    &self.icon_themes,
-                    &self.icon_theme_previews,
-                    &self.icon_theme,
-                ),
+                self.icon_theme_gallery
+                    .view(&self.icon_themes, &self.icon_theme),
                 Message::ToggleContextPage(ContextPage::IconThemes),
             )
             .title(fl!("icon-themes"))

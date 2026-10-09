@@ -1,0 +1,114 @@
+[
+    {
+        "repo": "GNOME/adwaita-icon-theme",
+        "ref": "51.0",
+        "license": "LGPL-3.0-or-later OR CC-BY-SA-3.0",
+        "themes": [{ "path": "Adwaita", "index_theme": "index.theme" }]
+    },
+    {
+        "repo": "somepaulo/MoreWaita",
+        "ref": "v50.1",
+        "license": "GPL-3.0",
+        "themes": [{ "path": "", "id": "MoreWaita" }]
+    },
+    {
+        "repo": "PapirusDevelopmentTeam/papirus-icon-theme",
+        "ref": "20260801",
+        "license": "GPL-3.0",
+        "themes": [{ "path": "Papirus" }, { "path": "Papirus-Dark" }, { "path": "Papirus-Light" }]
+    },
+    {
+        "repo": "bikass/kora",
+        "ref": "v2.0.6",
+        "license": "GPL-3.0",
+        "themes": [{ "path": "kora" }, { "path": "kora-pgrey" }]
+    },
+    {
+        "repo": "numixproject/numix-icon-theme",
+        "ref": "25.12.15",
+        "license": "GPL-3.0",
+        "themes": [{ "path": "Numix" }, { "path": "Numix-Light" }]
+    },
+    {
+        "repo": "numixproject/numix-icon-theme-circle",
+        "ref": "26.02.21",
+        "license": "GPL-3.0",
+        "themes": [{ "path": "Numix-Circle" }, { "path": "Numix-Circle-Light" }]
+    },
+    {
+        "repo": "daniruiz/flat-remix",
+        "ref": "e7de6c346da46e008987228f363b0eae6e638637",
+        "license": "GPL-3.0",
+        "themes": [
+            { "path": "Flat-Remix-Blue-Dark" },
+            { "path": "Flat-Remix-Blue-Light" },
+            { "path": "Flat-Remix-Green-Dark" },
+            { "path": "Flat-Remix-Red-Dark" },
+            { "path": "Flat-Remix-Violet-Dark" },
+            { "path": "Flat-Remix-Grey-Dark" },
+            { "path": "Flat-Remix-Grey-Light" }
+        ]
+    },
+    {
+        "repo": "SylEleuth/gruvbox-plus-icon-pack",
+        "ref": "v6.6.0",
+        "license": "GPL-3.0",
+        "themes": [{ "path": "Gruvbox-Plus-Dark" }, { "path": "Gruvbox-Plus-Light" }]
+    },
+    {
+        "repo": "EliverLara/candy-icons",
+        "ref": "83512fbcadcb7e1015ebbe1729a1894946b021be",
+        "license": "GPL-3.0",
+        "themes": [{ "path": "", "id": "candy-icons" }]
+    },
+    {
+        "repo": "EliverLara/Sweet-folders",
+        "ref": "40a5d36e50437901c7eaa1119bb9ae8006e2fe5c",
+        "license": "GPL-3.0",
+        "themes": [
+            { "path": "Sweet-Rainbow" },
+            { "path": "Sweet-Blue" },
+            { "path": "Sweet-Purple" },
+            { "path": "Sweet-Teal" }
+        ]
+    },
+    {
+        "repo": "keeferrourke/la-capitaine-icon-theme",
+        "ref": "v0.6.2",
+        "license": "GPL-3.0-or-later",
+        "themes": [{ "path": "", "id": "La-Capitaine" }]
+    },
+    {
+        "repo": "zayronxio/Zafiro-icons",
+        "ref": "1.3",
+        "license": "GPL-3.0",
+        "themes": [
+            { "path": "Dark", "id": "Zafiro-icons-Dark" },
+            { "path": "Light", "id": "Zafiro-icons-Light" }
+        ]
+    },
+    {
+        "repo": "madmaxms/iconpack-obsidian",
+        "ref": "v4.15",
+        "license": "GPL-3.0",
+        "themes": [{ "path": "Obsidian" }, { "path": "Obsidian-Aqua" }, { "path": "Obsidian-Sand" }]
+    },
+    {
+        "repo": "snwh/paper-icon-theme",
+        "ref": "aa3e8af7a1f0831a51fd7e638a4acb077a1e5188",
+        "license": "CC-BY-SA-4.0",
+        "themes": [{ "path": "Paper" }]
+    },
+    {
+        "repo": "MolassesLover/Nordzy-icon",
+        "url": "https://github.com/MolassesLover/Nordzy-icon/releases/download/1.8.7/Nordzy.tar.gz",
+        "license": "GPL-3.0",
+        "themes": [{ "path": "Nordzy" }]
+    },
+    {
+        "repo": "MolassesLover/Nordzy-icon",
+        "url": "https://github.com/MolassesLover/Nordzy-icon/releases/download/1.8.7/Nordzy-dark.tar.gz",
+        "license": "GPL-3.0",
+        "themes": [{ "path": "Nordzy-dark" }]
+    }
+]
