@@ -269,6 +269,8 @@ pub enum Action {
     /// Toggle entry N of the Tags submenu on the selection; see `tags_macos::menu_tags`.
     #[cfg(target_os = "macos")]
     ToggleTag(usize),
+    Undo,
+    Redo,
     WindowClose,
     WindowNew,
     ZoomDefault,
@@ -370,6 +372,8 @@ impl Action {
             Self::ZoomDefault => Message::ZoomDefault(entity_opt),
             Self::ZoomIn => Message::ZoomIn(entity_opt),
             Self::ZoomOut => Message::ZoomOut(entity_opt),
+            Self::Undo => Message::History(crate::undo::Message::Undo),
+            Self::Redo => Message::History(crate::undo::Message::Redo),
             Self::Recents => Message::Recents,
         }
     }
@@ -616,6 +620,7 @@ pub enum Message {
     ToggleFoldersFirst,
     ToggleShowHidden,
     Undo(usize),
+    History(crate::undo::Message),
     UndoTrash(widget::ToastId, Arc<[PathBuf]>),
     UndoTrashStart(Vec<TrashItem>),
     WindowClose,
@@ -919,6 +924,7 @@ pub struct App {
     overlap: FxHashMap<String, (window::Id, Rectangle)>,
     pending_operation_id: u64,
     pending_operations: BTreeMap<u64, (Operation, Controller)>,
+    history: crate::undo::History,
     progress_operations: BTreeSet<u64>,
     status_bar: StatusBar,
     complete_operations: BTreeMap<u64, Operation>,
@@ -1468,6 +1474,7 @@ impl App {
         let compio_tx = self.compio_tx.clone();
 
         self.pending_operation_id += 1;
+        self.history.started(id, &operation, &crate::undo::Disk);
         if operation.show_progress_notification() {
             self.progress_operations.insert(id);
         }
@@ -1498,6 +1505,117 @@ impl App {
             }
         }))
         .map(cosmic::Action::App)
+    }
+
+    /// Trash entries whose original paths are among `paths`.
+    fn find_in_trash(
+        &self,
+        paths: Arc<[PathBuf]>,
+    ) -> impl Future<Output = Vec<TrashItem>> + Send + 'static {
+        // macOS has no readable Trash listing, so the items come from the trash journal.
+        #[cfg(target_os = "macos")]
+        {
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    crate::trash_macos::journal_path()
+                        .map(|journal| {
+                            crate::trash_macos::items_for_originals(&journal, &paths)
+                        })
+                        .unwrap_or_default()
+                })
+                .await
+                .unwrap_or_else(|err| {
+                    log::warn!("failed to read the trash journal: {err}");
+                    Vec::new()
+                })
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+        let icon_sizes = self.config.tab.icon_sizes;
+        async move {
+            let mut found = Vec::with_capacity(paths.len());
+            match tokio::task::spawn_blocking(move || Location::Trash.scan(icon_sizes)).await {
+                Ok((_parent_item_opt, items)) => {
+                    for path in &*paths {
+                        for item in &items {
+                            if let ItemMetadata::Trash { ref entry, .. } = item.metadata
+                                && &entry.original_path() == path
+                            {
+                                found.push(entry.clone());
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    log::warn!("failed to rescan: {err}");
+                }
+            }
+            found
+        }
+        }
+    }
+
+    /// Undo or redo a step, or run the restore an undo planned.
+    fn history_update(&mut self, message: crate::undo::Message) -> Task<Message> {
+        use crate::undo::{Message as HistoryMessage, Plan};
+        let redo = matches!(message, HistoryMessage::Redo);
+        let result = match message {
+            HistoryMessage::Undo | HistoryMessage::Redo if self.editing_text() => {
+                return Task::none();
+            }
+            HistoryMessage::Undo => self.history.undo(&crate::undo::Disk),
+            HistoryMessage::Redo => self.history.redo(&crate::undo::Disk),
+            HistoryMessage::Restore(replay, items) => {
+                if items.is_empty() {
+                    self.history.abandon(replay);
+                    return self.toast(replay.refused_text(fl!("undo-refused-not-in-trash")));
+                }
+                return self.replay_operation(replay, Operation::Restore { items });
+            }
+        };
+        match result {
+            None => Task::none(),
+            Some(Ok((replay, Plan::Operations(ops)))) => Task::batch(
+                ops.into_iter()
+                    .map(|op| self.replay_operation(replay, op))
+                    .collect::<Vec<_>>(),
+            ),
+            Some(Ok((replay, Plan::Restore(paths)))) => {
+                let found = self.find_in_trash(paths.into());
+                cosmic::task::future(async move {
+                    Message::History(HistoryMessage::Restore(replay, found.await))
+                })
+            }
+            Some(Err((kind, refusal))) => self.toast(refusal.message(kind, redo)),
+        }
+    }
+
+    /// Whether a text field may have the keyboard: a dialog is open or the location is being
+    /// edited. A focused text input already captures Cmd+Z before it reaches the key binds; this
+    /// also covers the moments when it is shown but its focus task has not run yet.
+    fn editing_text(&self) -> bool {
+        self.dialog_pages.front().is_some()
+            || self
+                .tab_model
+                .active_data::<Tab>()
+                .is_some_and(|tab| tab.edit_location.is_some())
+    }
+
+    /// Run an operation for undo or redo, so it is not recorded as a new step.
+    fn replay_operation(
+        &mut self,
+        replay: crate::undo::Replay,
+        operation: Operation,
+    ) -> Task<Message> {
+        self.history.replaying(self.pending_operation_id, replay);
+        self.operation(operation)
+    }
+
+    fn toast(&mut self, text: String) -> Task<Message> {
+        self.toasts
+            .push(widget::toaster::Toast::new(text))
+            .map(cosmic::Action::App)
     }
 
     /// Will join operations together into a single task that will return a single
@@ -1538,6 +1656,9 @@ impl App {
         let mut commands = Vec::with_capacity(4 * completed.len());
         let mut op_sel = OperationSelection::default();
         for (id, op_sel_pending) in completed {
+            if let Some((op, _)) = self.pending_operations.get(&id) {
+                self.history.completed(id, op, &op_sel_pending);
+            }
             op_sel.ignored.extend(op_sel_pending.ignored);
             op_sel.selected.extend(op_sel_pending.selected);
             if let Some((op, _)) = self.pending_operations.remove(&id) {
@@ -1631,9 +1752,15 @@ impl App {
         let mut tasks = Vec::new();
         let mut failed = Vec::new();
         for (id, err) in errors.into_iter() {
+            let replay = self.history.failed(id);
             if let Some((op, controller)) = self.pending_operations.remove(&id) {
-                // Only show dialog if not cancelled
-                if !controller.is_cancelled() {
+                // An undo or redo that fails reports in a toast, like one refused up front.
+                if let Some(replay) = replay
+                    && !controller.is_cancelled()
+                {
+                    tasks.push(self.toast(replay.refused_text(err.to_string())));
+                } else if !controller.is_cancelled() {
+                    // Only show dialog if not cancelled
                     match err.kind {
                         OperationErrorType::Generic(_) => failed.push(id),
                         OperationErrorType::PasswordRequired => {
@@ -2940,6 +3067,7 @@ impl Application for App {
             overlap: FxHashMap::default(),
             pending_operation_id: 0,
             pending_operations: BTreeMap::new(),
+            history: crate::undo::History::default(),
             progress_operations: BTreeSet::new(),
             status_bar: StatusBar::default(),
             complete_operations: BTreeMap::new(),
@@ -5679,59 +5807,15 @@ impl Application for App {
                     )));
                 }
             }
-            Message::Undo(_id) => {
-                // TODO: undo
-            }
-            // macOS has no readable Trash listing, so Undo looks the items up in the journal.
-            #[cfg(target_os = "macos")]
+            // Upstream reserved the id for the edit history page, which never sends it; any id
+            // undoes the most recent step.
+            Message::Undo(_id) => return self.update(Message::History(crate::undo::Message::Undo)),
+            Message::History(message) => return self.history_update(message),
             Message::UndoTrash(id, recently_trashed) => {
                 self.toasts.remove(id);
-                return cosmic::task::future(async move {
-                    let items = tokio::task::spawn_blocking(move || {
-                        crate::trash_macos::journal_path()
-                            .map(|journal| {
-                                crate::trash_macos::items_for_originals(&journal, &recently_trashed)
-                            })
-                            .unwrap_or_default()
-                    })
-                    .await
-                    .unwrap_or_else(|err| {
-                        log::warn!("failed to read the trash journal: {err}");
-                        Vec::new()
-                    });
-                    Message::UndoTrashStart(items)
-                });
-            }
-            #[cfg(not(target_os = "macos"))]
-            Message::UndoTrash(id, recently_trashed) => {
-                self.toasts.remove(id);
-
-                let mut paths = Vec::with_capacity(recently_trashed.len());
-                let icon_sizes = self.config.tab.icon_sizes;
-
-                return cosmic::task::future(async move {
-                    match tokio::task::spawn_blocking(move || Location::Trash.scan(icon_sizes))
-                        .await
-                    {
-                        Ok((_parent_item_opt, items)) => {
-                            for path in &*recently_trashed {
-                                for item in &items {
-                                    if let ItemMetadata::Trash { ref entry, .. } = item.metadata {
-                                        let original_path = entry.original_path();
-                                        if &original_path == path {
-                                            paths.push(entry.clone());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            log::warn!("failed to rescan: {err}");
-                        }
-                    }
-
-                    Message::UndoTrashStart(paths)
-                });
+                self.history.forget_trashed(&recently_trashed);
+                let found = self.find_in_trash(recently_trashed);
+                return cosmic::task::future(async move { Message::UndoTrashStart(found.await) });
             }
             Message::UndoTrashStart(items) => {
                 return self.operation(Operation::Restore { items });
@@ -7469,6 +7553,8 @@ impl Application for App {
             &self.modifiers,
             &self.key_binds,
             self.clipboard_has_content(),
+            self.history.next_undo(),
+            self.history.next_redo(),
         )]
     }
 

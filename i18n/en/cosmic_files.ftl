@@ -20,6 +20,21 @@ notification-in-progress = File operations are in progress
 trash = Trash
 recents = Recents
 undo = Undo
+redo = Redo
+undo-action = Undo {$action}
+redo-action = Redo {$action}
+undo-kind-copy = Copy
+undo-kind-move = Move
+undo-kind-new-file = New File
+undo-kind-new-folder = New Folder
+undo-kind-rename = Rename
+undo-kind-trash = Move to Trash
+undo-refused = Can't undo {$action}: {$reason}
+redo-refused = Can't redo {$action}: {$reason}
+undo-refused-missing = {$path} is no longer there.
+undo-refused-occupied = {$path} already exists.
+undo-refused-no-folder = the folder {$path} no longer exists.
+undo-refused-not-in-trash = the items are not in the trash.
 today = Today
 
 # Desktop view options

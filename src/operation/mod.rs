@@ -1220,9 +1220,20 @@ impl Operation {
                         .check()
                         .await
                         .map_err(|s| OperationError::from_state(s, &controller))?;
-                    compio::fs::rename(&from, &to)
+                    let (from_c, to_c) = (from.clone(), to.clone());
+                    compio::runtime::spawn_blocking(move || rename_no_replace(&from_c, &to_c))
                         .await
-                        .map_err(|e| OperationError::from_err(e, &controller))?;
+                        .map_err(wrap_compio_spawn_error)?
+                        .map_err(|e| {
+                            if e.kind() == io::ErrorKind::AlreadyExists {
+                                OperationError::from_err(
+                                    fl!("undo-refused-occupied", path = to.display().to_string()),
+                                    &controller,
+                                )
+                            } else {
+                                OperationError::from_err(e, &controller)
+                            }
+                        })?;
                     Result::<_, OperationError>::Ok(OperationSelection {
                         ignored: vec![from],
                         selected: vec![to],
@@ -1373,6 +1384,91 @@ impl Operation {
     }
 }
 
+/// Rename `from` to `to` without replacing anything already at `to`.
+///
+/// Fails with [`io::ErrorKind::AlreadyExists`] if `to` exists, unless `to` is `from` itself under
+/// another case, as on a case-insensitive volume. The check and the rename are one atomic step
+/// where the platform offers it: `renamex_np` with `RENAME_EXCL` on macOS, `renameat2` with
+/// `RENAME_NOREPLACE` on Linux with glibc. Elsewhere, or on a volume that does not support the
+/// flag, it checks first and then renames.
+pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    match rename_exclusive(from, to) {
+        Err(err)
+            if err.kind() == io::ErrorKind::AlreadyExists && crate::undo::same_entry(from, to) =>
+        {
+            fs::rename(from, to)
+        }
+        Err(err) if is_unsupported(&err) => rename_checked(from, to),
+        result => result,
+    }
+}
+
+/// Check, then rename: not atomic, for platforms and volumes without an exclusive rename.
+fn rename_checked(from: &Path, to: &Path) -> io::Result<()> {
+    if to.symlink_metadata().is_ok() && !crate::undo::same_entry(from, to) {
+        return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+    }
+    fs::rename(from, to)
+}
+
+fn is_unsupported(err: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        matches!(
+            err.raw_os_error(),
+            Some(libc::ENOTSUP | libc::ENOSYS | libc::EINVAL)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        err.kind() == io::ErrorKind::Unsupported
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // SAFETY: both pointers are valid NUL-terminated strings that outlive the call.
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // SAFETY: both pointers are valid NUL-terminated strings that outlive the call.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    rename_checked(from, to)
+}
+
 #[track_caller]
 fn wrap_compio_spawn_error(err: Box<dyn std::any::Any + Send>) -> OperationError {
     log::error!(
@@ -1448,6 +1544,40 @@ mod tests {
         };
 
         future::join(handle_messages, handle_copy).await.1
+    }
+
+    #[test]
+    fn rename_no_replace_refuses_an_existing_target() -> io::Result<()> {
+        let fs = empty_fs()?;
+        let from = fs.path().join("from");
+        let to = fs.path().join("to");
+        fs::write(&from, b"from")?;
+        fs::write(&to, b"to")?;
+
+        let err = super::rename_no_replace(&from, &to).expect_err("must not overwrite");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&from)?, b"from");
+        assert_eq!(fs::read(&to)?, b"to");
+
+        fs::remove_file(&to)?;
+        super::rename_no_replace(&from, &to)?;
+        assert!(!from.exists());
+        assert_eq!(fs::read(&to)?, b"from");
+        Ok(())
+    }
+
+    #[test]
+    fn rename_no_replace_allows_a_case_only_rename() -> io::Result<()> {
+        let fs = empty_fs()?;
+        let lower = fs.path().join("name");
+        let upper = fs.path().join("NAME");
+        fs::write(&lower, b"x")?;
+        super::rename_no_replace(&lower, &upper)?;
+        let names: Vec<_> = fs::read_dir(fs.path())?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<io::Result<_>>()?;
+        assert_eq!(names, vec![std::ffi::OsString::from("NAME")]);
+        Ok(())
     }
 
     #[test(compio::test)]

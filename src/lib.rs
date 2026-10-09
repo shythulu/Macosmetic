@@ -68,6 +68,7 @@ pub(crate) mod trash_macos;
 pub(crate) mod url_values_macos;
 #[cfg(target_os = "macos")]
 pub(crate) mod workspace_macos;
+mod undo;
 mod zoom;
 
 pub(crate) type FxOrderMap<K, V> = ordermap::OrderMap<K, V, rustc_hash::FxBuildHasher>;
