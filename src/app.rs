@@ -248,6 +248,7 @@ pub enum Action {
     SelectAll,
     SetSort(HeadingOptions, bool),
     Settings,
+    ShowPackageContents,
     TabClose,
     TabNew,
     TabNext,
@@ -332,6 +333,9 @@ impl Action {
                 Message::TabMessage(entity_opt, tab::Message::SetSort(*sort, *dir))
             }
             Self::Settings => Message::ToggleContextPage(ContextPage::Settings),
+            Self::ShowPackageContents => {
+                Message::TabMessage(entity_opt, tab::Message::ShowPackageContents)
+            }
             Self::TabClose => Message::TabClose(entity_opt),
             Self::TabNew => Message::TabNew,
             Self::TabNext => Message::TabNext,

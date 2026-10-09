@@ -21,7 +21,9 @@ use std::time::Duration;
 use block2::RcBlock;
 use mime_guess::Mime;
 use objc2::AnyThread;
-use objc2_foundation::{NSError, NSSize, NSString, NSURL};
+use objc2::rc::autoreleasepool;
+use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
+use objc2_foundation::{NSDictionary, NSError, NSPoint, NSRect, NSSize, NSString, NSURL};
 use objc2_quick_look_thumbnailing::{
     QLThumbnailGenerationRequest, QLThumbnailGenerationRequestRepresentationTypes,
     QLThumbnailGenerator,
@@ -188,6 +190,47 @@ pub fn save_thumbnail_png(
             }
         }
     }
+}
+
+/// Render the icon Finder shows for `src` into a PNG at `dst`, `size * scale` pixels square.
+///
+/// This is the picture for packages Quick Look declines, chiefly apps: the generator fails on
+/// an `.app` even when asked for an icon. `NSWorkspace` and `NSImage` are safe to use off the
+/// main thread, so this can run on the same blocking workers as [`save_thumbnail_png`].
+pub fn save_icon_png(src: &Path, dst: &Path, size: f64, scale: f64) -> Result<(), String> {
+    let src_str = src
+        .to_str()
+        .ok_or_else(|| format!("path is not valid UTF-8: {}", src.display()))?;
+    let pixels = size * scale;
+
+    let png = autoreleasepool(|_| {
+        let icon = NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(src_str));
+        let mut rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(pixels, pixels));
+        // SAFETY: `rect` is a valid, exclusively borrowed rect for the duration of the call,
+        // and no context or hints are passed.
+        let cg_image = unsafe { icon.CGImageForProposedRect_context_hints(&mut rect, None, None) }
+            .ok_or_else(|| format!("no icon image for {}", src.display()))?;
+        let rep = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), &cg_image);
+        // SAFETY: an empty property dictionary is valid for every file type.
+        let data = unsafe {
+            rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+        }
+        .ok_or_else(|| format!("failed to encode the icon of {} as PNG", src.display()))?;
+        Ok::<_, String>(data.to_vec())
+    })?;
+
+    // AppKit multiplies the proposed rect by the main display's backing scale, so the image
+    // can come back larger than asked. Scale it to the exact size here.
+    let image = image::load_from_memory(&png).map_err(|err| err.to_string())?;
+    let side = pixels.round() as u32;
+    let image = if image.width() == side && image.height() == side {
+        image
+    } else {
+        image.resize_exact(side, side, image::imageops::FilterType::Lanczos3)
+    };
+    image
+        .save_with_format(dst, image::ImageFormat::Png)
+        .map_err(|err| format!("failed to write {}: {}", dst.display(), err))
 }
 
 /// Render `src` into a PNG at `dst`, retrying as an icon request for the MIME types where that
@@ -364,5 +407,22 @@ mod tests {
         )
         .expect_err("non-UTF-8 path should be rejected");
         assert!(err.contains("not valid UTF-8"), "unexpected error: {err}");
+    }
+
+    /// Quick Look answers an app bundle with "QLThumbnailErrorDomain error 0", even when an
+    /// icon is acceptable, so apps take their picture from NSWorkspace instead.
+    #[test]
+    fn save_icon_png_renders_an_app_icon() {
+        let dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let dst = dir.path().join("calculator.png");
+        save_icon_png(
+            Path::new("/System/Applications/Calculator.app"),
+            &dst,
+            64.0,
+            2.0,
+        )
+        .expect("an app should have an icon");
+        let image = image::open(&dst).expect("the icon should be a readable PNG");
+        assert_eq!((image.width(), image.height()), (128, 128));
     }
 }

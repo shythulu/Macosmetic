@@ -163,6 +163,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSResponder",
     "NSView",
     "NSWindow",
+    # The Finder icon of an app, which Quick Look declines to render (src/quicklook_macos.rs).
+    "objc2-core-graphics",
+    "NSGraphicsContext",
     "NSWorkspace",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
@@ -185,7 +188,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSURL",
     "NSUserDefaults",
     # NSNumber, for the volume free space the status bar reads (src/status_bar.rs),
-    # and volume names and ejectability (src/mounter/macos.rs).
+    # volume names and ejectability (src/mounter/macos.rs), and boolean NSURL
+    # resource values (src/url_values_macos.rs).
     "NSValue",
 ] }
 objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = [

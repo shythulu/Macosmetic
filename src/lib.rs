@@ -56,6 +56,8 @@ pub(crate) mod trash;
 #[cfg(target_os = "macos")]
 pub(crate) mod trash_macos;
 #[cfg(target_os = "macos")]
+pub(crate) mod url_values_macos;
+#[cfg(target_os = "macos")]
 pub(crate) mod workspace_macos;
 mod zoom;
 

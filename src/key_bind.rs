@@ -700,6 +700,7 @@ unit_actions![
     SelectLast,
     SelectAll,
     Settings,
+    ShowPackageContents,
     TabClose,
     TabNew,
     TabNext,
@@ -1108,8 +1109,8 @@ mod tests {
             assert_eq!(&action.config_name(), name);
             assert_eq!(Action::from_config_name(name), Some(*action));
         }
-        // 68 payload-free variants plus the four parameterized ones below.
-        assert_eq!(UNIT_ACTIONS.len(), 68);
+        // 69 payload-free variants plus the four parameterized ones below.
+        assert_eq!(UNIT_ACTIONS.len(), 69);
     }
 
     #[test]
