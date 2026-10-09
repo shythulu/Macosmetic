@@ -1,0 +1,144 @@
+# Builds the icon themes whose upstream ships only an install.sh (WhiteSur, Tela, Colloid,
+# Fluent, Reversal, Qogir) on a Linux runner and attaches the results to a release of this
+# repository, so the app can download ready-made directories and never runs a script.
+#
+# Run it by hand from the Actions tab. It creates the release `icon-themes-<date>` with one
+# `<Family>.tar.gz` per theme, holding the theme directories at the archive root, plus a
+# SHA256SUMS file. Then add each archive to res/icon-themes/sources.json as a `url` source:
+#
+#   {
+#     "repo": "vinceliuice/WhiteSur-icon-theme",
+#     "family": "WhiteSur",
+#     "url": "https://github.com/shythulu/Macosmetic/releases/download/icon-themes-<date>/WhiteSur.tar.gz",
+#     "license": "GPL-3.0",
+#     "themes": [{ "path": "WhiteSur" }, { "path": "WhiteSur-dark" }]
+#   }
+#
+# and run scripts/icon-theme-catalog.py, which downloads the asset, records its SHA-256 and
+# size in catalog.json and draws the previews. The release notes name every upstream tag so
+# the GPL-3 source is one click away.
+#
+# This workflow has not been run yet. Reversal has no tags, so its ref is a branch; pin it to
+# a commit before the first run.
+
+name: Build install.sh icon themes
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release tag to create, for example icon-themes-2026-10-09
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.family }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: WhiteSur
+            repo: vinceliuice/WhiteSur-icon-theme
+            ref: 2026-09-10
+            # The default accent, both dark and light; other accents are a file install away.
+            args: ""
+          - family: Tela
+            repo: vinceliuice/Tela-icon-theme
+            ref: 2026-07-07
+            # Tela takes colour names as arguments; standard is the default blue.
+            args: standard
+          - family: Colloid
+            repo: vinceliuice/Colloid-icon-theme
+            ref: 2026-08-10
+            args: ""
+          - family: Fluent
+            repo: vinceliuice/Fluent-icon-theme
+            ref: 2026-07-27
+            args: ""
+          - family: Reversal
+            repo: yeyushengfan258/Reversal-icon-theme
+            # TODO: pin to a commit; the repository has no tags.
+            ref: master
+            args: ""
+          - family: Qogir
+            repo: vinceliuice/Qogir-icon-theme
+            ref: 2025-02-15
+            args: ""
+    steps:
+      - name: Check out ${{ matrix.repo }} at ${{ matrix.ref }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: upstream
+
+      - name: Run install.sh into a staging directory
+        working-directory: upstream
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ./install.sh -d "$GITHUB_WORKSPACE/out" ${{ matrix.args }}
+          ls -la "$GITHUB_WORKSPACE/out"
+
+      - name: Check every theme has an index.theme
+        working-directory: out
+        run: |
+          for dir in */; do
+            test -f "$dir/index.theme" || { echo "$dir has no index.theme"; exit 1; }
+          done
+
+      - name: Pack ${{ matrix.family }}.tar.gz
+        run: |
+          mkdir -p dist
+          # Symlinks are kept: the dark variants are mostly links into the base theme.
+          tar czf "dist/${{ matrix.family }}.tar.gz" -C out $(ls out)
+          cd dist
+          sha256sum "${{ matrix.family }}.tar.gz" | tee "${{ matrix.family }}.sha256"
+          echo "upstream=${{ matrix.repo }}@${{ matrix.ref }}" > "${{ matrix.family }}.source"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.family }}
+          path: dist/*
+
+  release:
+    name: Attach to release ${{ inputs.release }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write SHA256SUMS and release notes
+        working-directory: dist
+        run: |
+          cat *.sha256 > SHA256SUMS
+          rm *.sha256
+          {
+            echo "Icon themes built from their upstream install.sh on ubuntu-latest."
+            echo "Each archive holds the theme directories at its root. Sources (GPL-3.0):"
+            echo
+            for source in *.source; do
+              family="${source%.source}"
+              upstream="$(sed 's/^upstream=//' "$source")"
+              echo "- ${family}.tar.gz: https://github.com/${upstream%@*}/tree/${upstream#*@}"
+            done
+          } > notes.md
+          rm *.source
+          cat notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.release }}" \
+            --repo "${{ github.repository }}" \
+            --title "Icon themes ${{ inputs.release }}" \
+            --notes-file dist/notes.md \
+            dist/*.tar.gz dist/SHA256SUMS

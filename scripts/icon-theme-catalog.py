@@ -132,7 +132,7 @@ class Archive:
         self.tar = tarfile.open(path, "r:gz")
         self.members = {}
         for member in self.tar.getmembers():
-            self.members[member.name.rstrip("/")] = member
+            self.members[posixpath.normpath(member.name)] = member
         self.prefix = ""
         if strip_prefix:
             tops = {name.split("/", 1)[0] for name in self.members}
