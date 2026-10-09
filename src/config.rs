@@ -34,28 +34,60 @@ macro_rules! percent {
     };
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum AppTheme {
     Dark,
     Light,
     System,
+    /// A theme file found by [`crate::theme_catalog`], stored by name.
+    Named(String),
 }
 
 impl AppTheme {
     pub fn theme(&self) -> theme::Theme {
         match self {
             Self::Dark => {
-                let mut t = theme::system_dark();
+                let mut t = system_or_builtin(theme::system_dark, theme::Theme::dark, true);
                 t.theme_type.prefer_dark(Some(true));
                 t
             }
             Self::Light => {
-                let mut t = theme::system_light();
+                let mut t = system_or_builtin(theme::system_light, theme::Theme::light, false);
                 t.theme_type.prefer_dark(Some(false));
                 t
             }
             Self::System => theme::system_preference(),
+            Self::Named(name) => crate::theme_catalog::get(name)
+                .map(|found| {
+                    let mut t = found.theme();
+                    // Declare the polarity the same way the built-in arms do, so anything
+                    // keying off it sees a named dark theme as dark.
+                    t.theme_type.prefer_dark(Some(found.is_dark));
+                    t
+                })
+                .unwrap_or_else(|| {
+                    log::warn!("theme {name:?} is no longer on the theme search path");
+                    Self::System.theme()
+                }),
         }
+    }
+}
+
+/// The COSMIC desktop keeps the light and dark themes in shared cosmic-config stores that
+/// only its own settings app writes. Nothing populates them when we run standalone, and
+/// libcosmic answers an empty store with its *dark* default rather than an error, so
+/// asking for light would silently return dark. Fall back to the compiled-in theme
+/// whenever the store hands back the wrong polarity.
+fn system_or_builtin(
+    from_system: fn() -> theme::Theme,
+    builtin: fn() -> theme::Theme,
+    want_dark: bool,
+) -> theme::Theme {
+    let theme = from_system();
+    if theme.cosmic().is_dark == want_dark {
+        theme
+    } else {
+        builtin()
     }
 }
 
@@ -205,11 +237,17 @@ pub struct Config {
     pub dialog: DialogConfig,
     pub desktop: DesktopConfig,
     pub context_actions: Vec<ContextActionPreset>,
+    /// The row of cut, copy, paste and rename buttons at the top of context menus.
+    pub context_quick_bar: bool,
     pub thumb_cfg: ThumbCfg,
     pub favorites: Vec<Favorite>,
     /// Looks the user gave individual folders, keyed by path. Unlike `State::sort_names`
     /// these are never evicted: each one is an explicit choice.
     pub folder_looks: BTreeMap<PathBuf, FolderLook>,
+    /// The last icons picked in the "Customize folder" drawer, most recent first, at most
+    /// [`crate::folder_look::RECENT_MAX`].
+    #[serde(default)]
+    pub recent_folder_looks: Vec<FolderLook>,
     /// Key bindings that override the defaults from [`crate::key_bind::key_binds`].
     ///
     /// Optional: configurations written before this field existed simply have no overrides.
@@ -272,6 +310,7 @@ impl Default for Config {
             desktop: DesktopConfig::default(),
             dialog: DialogConfig::default(),
             context_actions: Vec::new(),
+            context_quick_bar: true,
             thumb_cfg: ThumbCfg::default(),
             favorites: vec![
                 Favorite::Home,
@@ -282,6 +321,7 @@ impl Default for Config {
                 Favorite::Videos,
             ],
             folder_looks: BTreeMap::new(),
+            recent_folder_looks: Vec::new(),
             keybinds: Shortcuts::new(),
             show_details: false,
             show_recents: true,
@@ -442,6 +482,54 @@ pub struct TimeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type SortNames = FxOrderMap<String, (HeadingOptions, bool)>;
+
+    #[test]
+    fn sort_names_saved_before_kind_and_date_added_still_load() {
+        // `sort_names` as an earlier build wrote it, through cosmic-config's RON.
+        let saved = r#"{
+            "/Users/someone/Downloads": (Modified, false),
+            "/Users/someone/Documents": (Name, true),
+            "/Users/someone/Pictures": (Size, false),
+            "trash:///": (TrashedOn, true),
+        }"#;
+        let loaded: SortNames = ron::from_str(saved).expect("old sort_names should load");
+        assert_eq!(
+            loaded.get("/Users/someone/Downloads"),
+            Some(&(HeadingOptions::Modified, false))
+        );
+        assert_eq!(
+            loaded.get("trash:///"),
+            Some(&(HeadingOptions::TrashedOn, true))
+        );
+        assert_eq!(loaded.len(), 4);
+    }
+
+    #[test]
+    fn sort_names_round_trip_kind_and_date_added() {
+        let mut sort_names = SortNames::default();
+        sort_names.insert("/a".to_string(), (HeadingOptions::Kind, true));
+        sort_names.insert("/b".to_string(), (HeadingOptions::DateAdded, false));
+        sort_names.insert("/c".to_string(), (HeadingOptions::Modified, false));
+
+        // The same writer cosmic-config uses.
+        let saved = ron::ser::to_string_pretty(&sort_names, ron::ser::PrettyConfig::new())
+            .expect("sort_names should serialize");
+        assert!(saved.contains("Kind") && saved.contains("DateAdded"));
+        let loaded: SortNames = ron::from_str(&saved).expect("sort_names should load");
+        assert_eq!(loaded, sort_names);
+    }
+
+    #[test]
+    fn context_quick_bar_defaults_on() {
+        assert!(Config::default().context_quick_bar);
+        // A config written before the field existed has no key for it.
+        let config: Config = serde_json::from_str("{}").unwrap();
+        assert!(config.context_quick_bar);
+        let config: Config = serde_json::from_str(r#"{"context_quick_bar": false}"#).unwrap();
+        assert!(!config.context_quick_bar);
+    }
 
     #[test]
     fn favorite_with_label_converts_path_to_named() {

@@ -47,6 +47,11 @@ pub struct Context {
     pub(crate) op_sel: OperationSelection,
     replace_result_opt: Option<ReplaceResult>,
     remaining_conflicts: usize,
+    /// Directories this operation created, as (source, destination) pairs in creation order.
+    /// Their metadata is copied once everything inside them is written, deepest first, so a
+    /// read-only mode or a deny ACL on the source cannot block the copy of their children.
+    #[cfg(target_os = "macos")]
+    created_dirs: Vec<(PathBuf, PathBuf)>,
 }
 
 pub trait OnProgress: Fn(&Op, &Progress) + 'static {}
@@ -72,6 +77,8 @@ impl Context {
             op_sel: OperationSelection::default(),
             replace_result_opt: None,
             remaining_conflicts: 0,
+            #[cfg(target_os = "macos")]
+            created_dirs: Vec::new(),
         }
     }
 
@@ -238,6 +245,14 @@ impl Context {
             }
         }
 
+        // Copy folder tags, xattrs, ACLs, mode and times now that the folders are filled.
+        #[cfg(target_os = "macos")]
+        for (from, to) in self.created_dirs.drain(..).rev() {
+            if let Err(why) = crate::copyfile_macos::copy_metadata_path(&from, &to) {
+                tracing::warn!(?why, "failed to copy metadata to {}", to.display());
+            }
+        }
+
         // Flush files to disk
         sync_to_disk(written_files, target_dirs).await;
 
@@ -399,6 +414,12 @@ impl Op {
                 }
             }
             OpKind::Mkdir => {
+                // Only a folder this operation creates takes the source's metadata; merging into
+                // an existing folder leaves that folder's own tags and permissions alone.
+                #[cfg(target_os = "macos")]
+                if !self.to.exists() {
+                    ctx.created_dirs.push((self.from.clone(), self.to.clone()));
+                }
                 compio::fs::create_dir_all(&self.to).await?;
             }
             OpKind::Remove => {
@@ -450,6 +471,25 @@ impl Op {
                 ControlFlow::Break(ret) => {
                     return Ok(ret);
                 }
+            }
+        }
+
+        // A clone is instant and carries every piece of metadata; it fails fast where cloning is
+        // not possible (another volume, a filesystem without clones) and the stream takes over.
+        #[cfg(target_os = "macos")]
+        match crate::copyfile_macos::try_clone(&self.from, &self.to) {
+            Ok(true) => {
+                let len = compio::fs::metadata(&self.to).await.ok().map(|m| m.len());
+                progress.total_bytes = len;
+                progress.current_bytes = len.unwrap_or(0);
+                (ctx.on_progress)(self, &progress);
+                return Ok(true);
+            }
+            Ok(false) => {}
+            Err(why) => {
+                return Err(why)
+                    .with_context(|| format!("failed to open {} for writing", self.to.display()))
+                    .map_err(Into::into);
             }
         }
 
@@ -602,6 +642,21 @@ impl Op {
             }
         }
 
+        // Carry over xattrs (Finder tags and comments, quarantine, resource fork, FinderInfo),
+        // ACLs and BSD flags, which the byte stream above does not copy.
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd;
+            let from_fd = from_file.as_raw_fd();
+            let op = AsyncifyFd::new(to_file.to_shared_fd(), move |file: &std::fs::File| {
+                let result = crate::copyfile_macos::copy_metadata_fd(from_fd, file.as_raw_fd());
+                BufResult(result.map(|()| 0), ())
+            });
+            if let Err(why) = compio::runtime::submit(op).await.0 {
+                tracing::warn!(?why, "failed to copy metadata to {}", self.to.display());
+            }
+        }
+
         _ = to_file.close().await;
 
         Ok(true)
@@ -716,5 +771,282 @@ impl Op {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::{Context, Method};
+    use crate::copyfile_macos::DISABLE_CLONE;
+    use crate::operation::{Controller, ReplaceResult};
+    use std::ffi::CString;
+    use std::fs;
+    use std::io::{self, Write};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    const TAGS: &str = "com.apple.metadata:_kMDItemUserTags";
+    const QUARANTINE: &str = "com.apple.quarantine";
+    const RESOURCE_FORK: &str = "com.apple.ResourceFork";
+    const COMMENT: &str = "com.apple.metadata:kMDItemFinderComment";
+    const FINDER_INFO: &str = "com.apple.FinderInfo";
+
+    fn c(s: impl AsRef<[u8]>) -> CString {
+        CString::new(s.as_ref()).unwrap()
+    }
+
+    fn set_xattr(path: &Path, name: &str, value: &[u8]) {
+        // SAFETY: valid C strings and a buffer of the given length.
+        let ret = unsafe {
+            libc::setxattr(
+                c(path.as_os_str().as_bytes()).as_ptr(),
+                c(name).as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                libc::XATTR_NOFOLLOW,
+            )
+        };
+        assert_eq!(ret, 0, "setxattr {name}: {}", io::Error::last_os_error());
+    }
+
+    /// The kernel stamps `com.apple.provenance` on files the test process creates, with a
+    /// value tied to the creating process; it is not user metadata and copyfile cannot set it.
+    const PROVENANCE: &str = "com.apple.provenance";
+
+    /// Every xattr of `path` except provenance, sorted by name, with its value.
+    fn xattrs(path: &Path) -> Vec<(String, Vec<u8>)> {
+        let p = c(path.as_os_str().as_bytes());
+        // SAFETY: a null buffer of size 0 asks for the needed size.
+        let size =
+            unsafe { libc::listxattr(p.as_ptr(), std::ptr::null_mut(), 0, libc::XATTR_NOFOLLOW) };
+        assert!(size >= 0, "listxattr: {}", io::Error::last_os_error());
+        let mut names = vec![0u8; size as usize];
+        // SAFETY: the buffer is `names.len()` bytes long.
+        let size = unsafe {
+            libc::listxattr(
+                p.as_ptr(),
+                names.as_mut_ptr().cast(),
+                names.len(),
+                libc::XATTR_NOFOLLOW,
+            )
+        };
+        names.truncate(size as usize);
+        let mut out: Vec<_> = names
+            .split(|b| *b == 0)
+            .filter(|n| !n.is_empty() && *n != PROVENANCE.as_bytes())
+            .map(|n| {
+                let name = c(n);
+                // SAFETY: a null buffer of size 0 asks for the needed size.
+                let len = unsafe {
+                    libc::getxattr(
+                        p.as_ptr(),
+                        name.as_ptr(),
+                        std::ptr::null_mut(),
+                        0,
+                        0,
+                        libc::XATTR_NOFOLLOW,
+                    )
+                };
+                assert!(len >= 0, "getxattr: {}", io::Error::last_os_error());
+                let mut value = vec![0u8; len as usize];
+                // SAFETY: the buffer is `value.len()` bytes long.
+                let len = unsafe {
+                    libc::getxattr(
+                        p.as_ptr(),
+                        name.as_ptr(),
+                        value.as_mut_ptr().cast(),
+                        value.len(),
+                        0,
+                        libc::XATTR_NOFOLLOW,
+                    )
+                };
+                value.truncate(len as usize);
+                (String::from_utf8_lossy(n).into_owned(), value)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn names(attrs: &[(String, Vec<u8>)]) -> Vec<&str> {
+        attrs.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    fn tag_plist(tag: &str) -> Vec<u8> {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><array><string>{tag}\n6</string></array></plist>"
+        )
+        .into_bytes()
+    }
+
+    /// A small file carrying a Finder tag, quarantine, a resource fork, a Finder comment and
+    /// FinderInfo.
+    fn decorated_file(path: &Path) {
+        fs::write(path, b"hello metadata").unwrap();
+        set_xattr(path, TAGS, &tag_plist("Red"));
+        set_xattr(path, QUARANTINE, b"0081;6523f1a0;Safari;");
+        set_xattr(path, RESOURCE_FORK, &[0xAB; 300]);
+        set_xattr(path, COMMENT, b"a Finder comment");
+        let mut finder_info = [0u8; 32];
+        finder_info[..8].copy_from_slice(b"TEXTttxt");
+        set_xattr(path, FINDER_INFO, &finder_info);
+    }
+
+    async fn copy(from: &Path, to: &Path, replace: ReplaceResult) -> bool {
+        Context::new(Controller::default())
+            .on_replace(move |_op, _count| Box::pin(async move { replace }))
+            .recursive_copy_or_move([(from.to_path_buf(), to.to_path_buf())], Method::Copy)
+            .await
+            .expect("copy should succeed")
+    }
+
+    /// Physical device offset of the first byte of `path`. Two files that report the same
+    /// offset share their blocks, which only an APFS clone produces.
+    fn device_offset(path: &Path) -> i64 {
+        let file = fs::File::open(path).unwrap();
+        let mut l2p = libc::log2phys {
+            l2p_flags: 0,
+            l2p_contigbytes: 4096,
+            l2p_devoffset: 0,
+        };
+        // SAFETY: F_LOG2PHYS_EXT reads and writes one `log2phys`.
+        let ret = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_LOG2PHYS_EXT, &mut l2p) };
+        assert_ne!(ret, -1, "F_LOG2PHYS_EXT: {}", io::Error::last_os_error());
+        l2p.l2p_devoffset
+    }
+
+    /// Checks that `to` has the data and every xattr of `from`.
+    ///
+    /// A clone keeps the quarantine record byte for byte. On the streamed path `fcopyfile`
+    /// re-applies quarantine through the quarantine API, which writes a fresh record (new
+    /// timestamp and flags), so there only its presence is checked.
+    fn assert_metadata_kept(from: &Path, to: &Path) {
+        let (src, dst) = (xattrs(from), xattrs(to));
+        for name in [TAGS, QUARANTINE, RESOURCE_FORK, COMMENT, FINDER_INFO] {
+            assert!(names(&dst).contains(&name), "{name} missing from {dst:?}");
+        }
+        let without_quarantine = |attrs: Vec<(String, Vec<u8>)>| {
+            attrs
+                .into_iter()
+                .filter(|(name, _)| name != QUARANTINE)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(without_quarantine(src), without_quarantine(dst));
+        assert_eq!(fs::read(from).unwrap(), fs::read(to).unwrap());
+    }
+
+    #[compio::test]
+    async fn clone_keeps_file_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        decorated_file(&from);
+        assert!(copy(&from, &to, ReplaceResult::Cancel).await);
+        assert_metadata_kept(&from, &to);
+        assert_eq!(xattrs(&from), xattrs(&to));
+    }
+
+    #[compio::test]
+    async fn streamed_copy_keeps_file_metadata() {
+        DISABLE_CLONE.with(|d| d.set(true));
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        decorated_file(&from);
+        fs::File::open(&from).unwrap().sync_all().unwrap();
+        let ok = copy(&from, &to, ReplaceResult::Cancel).await;
+        DISABLE_CLONE.with(|d| d.set(false));
+        assert!(ok);
+        assert_metadata_kept(&from, &to);
+        fs::File::open(&to).unwrap().sync_all().unwrap();
+        assert_ne!(
+            device_offset(&from),
+            device_offset(&to),
+            "a streamed copy must not share blocks"
+        );
+    }
+
+    #[compio::test]
+    async fn tagged_folder_keeps_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("Folder");
+        let to = dir.path().join("Folder copy");
+        fs::create_dir_all(from.join("inner")).unwrap();
+        set_xattr(&from, TAGS, &tag_plist("Blue"));
+        set_xattr(&from.join("inner"), TAGS, &tag_plist("Green"));
+        decorated_file(&from.join("inner/file.txt"));
+        // A read-only source folder: its mode must land only after its children are copied.
+        fs::set_permissions(&from, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let ok = copy(&from, &to, ReplaceResult::Cancel).await;
+
+        let to_mode = fs::metadata(&to).map(|m| m.permissions().mode() & 0o777);
+        for p in [&from, &to] {
+            if p.exists() {
+                fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        assert!(ok);
+        assert_eq!(to_mode.unwrap(), 0o555);
+        assert_eq!(xattrs(&from), xattrs(&to));
+        assert_eq!(xattrs(&from.join("inner")), xattrs(&to.join("inner")));
+        assert_metadata_kept(&from.join("inner/file.txt"), &to.join("inner/file.txt"));
+    }
+
+    #[compio::test]
+    async fn large_file_is_cloned() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("big.bin"), dir.path().join("big copy.bin"));
+        {
+            // 200 MB logical size, 1 MB of real data at the start so it has physical blocks.
+            let mut file = fs::File::create(&from).unwrap();
+            file.write_all(&vec![0x5A; 1024 * 1024]).unwrap();
+            file.set_len(200 * 1024 * 1024).unwrap();
+            file.sync_all().unwrap();
+        }
+        let started = std::time::Instant::now();
+        assert!(copy(&from, &to, ReplaceResult::Cancel).await);
+        let elapsed = started.elapsed();
+        assert_eq!(fs::metadata(&to).unwrap().len(), 200 * 1024 * 1024);
+        assert_eq!(
+            device_offset(&from),
+            device_offset(&to),
+            "the copy was not a clone"
+        );
+        assert!(elapsed.as_secs() < 5, "clone took {elapsed:?}");
+    }
+
+    fn conflict(dir: &Path) -> (PathBuf, PathBuf) {
+        let (from, to) = (dir.join("a.txt"), dir.join("target.txt"));
+        decorated_file(&from);
+        fs::write(&to, b"old contents that are longer than the new").unwrap();
+        set_xattr(&to, "user.stale", b"1");
+        (from, to)
+    }
+
+    #[compio::test]
+    async fn replace_on_conflict() {
+        for disable_clone in [false, true] {
+            DISABLE_CLONE.with(|d| d.set(disable_clone));
+            let dir = tempfile::tempdir().unwrap();
+            let (from, to) = conflict(dir.path());
+            let ok = copy(&from, &to, ReplaceResult::Replace(false)).await;
+            DISABLE_CLONE.with(|d| d.set(false));
+            assert!(ok);
+            assert_metadata_kept(&from, &to);
+        }
+    }
+
+    #[compio::test]
+    async fn skip_on_conflict_leaves_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = conflict(dir.path());
+        assert!(copy(&from, &to, ReplaceResult::Skip(false)).await);
+        assert_eq!(
+            fs::read(&to).unwrap(),
+            b"old contents that are longer than the new"
+        );
+        assert_eq!(names(&xattrs(&to)), ["user.stale"]);
     }
 }

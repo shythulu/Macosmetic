@@ -63,6 +63,7 @@ use crate::config::{
     AppTheme, Config, DesktopConfig, Favorite, IconSizes, State, TIME_CONFIG_ID, TabConfig,
     TimeConfig, TypeToSearch,
 };
+use crate::copy_path::{self, PathVariant};
 use crate::dialog::{
     Dialog, DialogFilter, DialogFilterPattern, DialogKind, DialogMessage, DialogResult,
     DialogSettings,
@@ -88,6 +89,7 @@ use crate::tab::{
     self, HOVER_DURATION, HeadingOptions, ItemMetadata, Location, SORT_OPTION_FALLBACK,
     SearchLocation, Tab,
 };
+use crate::theme_catalog;
 use crate::trash::{Trash, TrashExt};
 use crate::zoom::{zoom_in_view, zoom_out_view, zoom_to_default};
 use crate::{FxOrderMap, context_action, fl, home_dir, menu, mime_icon};
@@ -118,6 +120,10 @@ static MOUNT_ERROR_TRY_AGAIN_BUTTON_ID: LazyLock<widget::Id> =
 
 pub(crate) static REPLACE_BUTTON_ID: LazyLock<widget::Id> =
     LazyLock::new(|| widget::Id::new("replace-button"));
+
+/// Match desktop, dark, light: the rows of the theme dropdown that are not themes found
+/// by [`crate::theme_catalog`], which follow them.
+const BUILT_IN_APP_THEMES: usize = 3;
 
 #[derive(Clone, Debug)]
 pub enum Mode {
@@ -193,9 +199,10 @@ pub fn open_trash_command(exe: &Path) -> process::Command {
 pub enum Action {
     About,
     AddToSidebar,
+    AirDrop,
     Compress,
     Copy,
-    CopyPath,
+    CopyPath(PathVariant),
     CopyTo,
     Cut,
     CustomizeFolder,
@@ -204,6 +211,7 @@ pub enum Action {
     CosmicSettingsWallpaper,
     DesktopViewOptions,
     Delete,
+    Duplicate,
     EditHistory,
     EditLocation,
     Eject,
@@ -226,6 +234,7 @@ pub enum Action {
     MoveTo,
     NewFile,
     NewFolder,
+    NewFolderWithSelection,
     Open,
     OpenInNewTab,
     OpenInNewWindow,
@@ -246,8 +255,12 @@ pub enum Action {
     SelectFirst,
     SelectLast,
     SelectAll,
+    /// Give the selected folders this colour, or `None` to take their colour away.
+    SetFolderColour(Option<&'static str>),
     SetSort(HeadingOptions, bool),
     Settings,
+    Share,
+    ShowPackageContents,
     TabClose,
     TabNew,
     TabNext,
@@ -258,6 +271,11 @@ pub enum Action {
     ToggleShowHidden,
     ToggleSort(HeadingOptions),
     ToggleStatusBar,
+    /// Toggle entry N of the Tags submenu on the selection; see `tags_macos::menu_tags`.
+    #[cfg(target_os = "macos")]
+    ToggleTag(usize),
+    Undo,
+    Redo,
     WindowClose,
     WindowNew,
     ZoomDefault,
@@ -271,9 +289,10 @@ impl Action {
         match self {
             Self::About => Message::ToggleContextPage(ContextPage::About),
             Self::AddToSidebar => Message::AddToSidebar(entity_opt),
+            Self::AirDrop => Message::Share(entity_opt, ShareVia::AirDrop),
             Self::Compress => Message::Compress(entity_opt),
             Self::Copy => Message::Copy(entity_opt),
-            Self::CopyPath => Message::CopyPath(entity_opt),
+            Self::CopyPath(variant) => Message::CopyPath(entity_opt, *variant),
             Self::CopyTo => Message::CopyTo(entity_opt),
             Self::Cut => Message::Cut(entity_opt),
             Self::CustomizeFolder => Message::CustomizeFolder(entity_opt),
@@ -282,6 +301,7 @@ impl Action {
             Self::CosmicSettingsWallpaper => Message::CosmicSettings("wallpaper"),
             Self::Delete => Message::Delete(entity_opt),
             Self::DesktopViewOptions => Message::DesktopViewOptions,
+            Self::Duplicate => Message::Duplicate(entity_opt),
             Self::EditHistory => Message::ToggleContextPage(ContextPage::EditHistory),
             Self::EditLocation => Message::TabMessage(entity_opt, tab::Message::EditLocationEnable),
             Self::Eject => Message::Eject,
@@ -306,6 +326,7 @@ impl Action {
             Self::MoveTo => Message::MoveTo(entity_opt),
             Self::NewFile => Message::NewItem(entity_opt, false),
             Self::NewFolder => Message::NewItem(entity_opt, true),
+            Self::NewFolderWithSelection => Message::NewFolderWithSelection(entity_opt),
             Self::Open => Message::TabMessage(entity_opt, tab::Message::Open(None)),
             Self::OpenInNewTab => Message::OpenInNewTab(entity_opt),
             Self::OpenInNewWindow => Message::OpenInNewWindow(entity_opt),
@@ -328,10 +349,15 @@ impl Action {
             Self::SelectAll => Message::TabMessage(entity_opt, tab::Message::SelectAll),
             Self::SelectFirst => Message::TabMessage(entity_opt, tab::Message::SelectFirst),
             Self::SelectLast => Message::TabMessage(entity_opt, tab::Message::SelectLast),
+            Self::SetFolderColour(colour) => Message::SetFolderColour(entity_opt, *colour),
             Self::SetSort(sort, dir) => {
                 Message::TabMessage(entity_opt, tab::Message::SetSort(*sort, *dir))
             }
             Self::Settings => Message::ToggleContextPage(ContextPage::Settings),
+            Self::ShowPackageContents => {
+                Message::TabMessage(entity_opt, tab::Message::ShowPackageContents)
+            }
+            Self::Share => Message::Share(entity_opt, ShareVia::Picker),
             Self::TabClose => Message::TabClose(entity_opt),
             Self::TabNew => Message::TabNew,
             Self::TabNext => Message::TabNext,
@@ -341,6 +367,8 @@ impl Action {
             Self::ToggleFoldersFirst => Message::ToggleFoldersFirst,
             Self::ToggleShowHidden => Message::ToggleShowHidden,
             Self::ToggleStatusBar => Message::StatusBar(status_bar::Message::Toggle),
+            #[cfg(target_os = "macos")]
+            Self::ToggleTag(index) => Message::ToggleTag(entity_opt, *index),
             Self::ToggleSort(sort) => {
                 Message::TabMessage(entity_opt, tab::Message::ToggleSort(*sort))
             }
@@ -349,6 +377,8 @@ impl Action {
             Self::ZoomDefault => Message::ZoomDefault(entity_opt),
             Self::ZoomIn => Message::ZoomIn(entity_opt),
             Self::ZoomOut => Message::ZoomOut(entity_opt),
+            Self::Undo => Message::History(crate::undo::Message::Undo),
+            Self::Redo => Message::History(crate::undo::Message::Redo),
             Self::Recents => Message::Recents,
         }
     }
@@ -402,6 +432,15 @@ impl MenuAction for NavMenuAction {
     }
 }
 
+/// Where [`Message::Share`] sends the selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShareVia {
+    /// The system share menu, with every service that can take the items.
+    Picker,
+    /// Straight to AirDrop.
+    AirDrop,
+}
+
 /// Messages that are used specifically by our [`App`].
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -411,7 +450,7 @@ pub enum Message {
     Compress(Option<Entity>),
     Config(Config),
     Copy(Option<Entity>),
-    CopyPath(Option<Entity>),
+    CopyPath(Option<Entity>, PathVariant),
     CopyTo(Option<Entity>),
     CopyToResult(DialogResult),
     CosmicSettings(&'static str),
@@ -430,6 +469,8 @@ pub enum Message {
     FolderLookIconSet(usize),
     FolderLookImageResult(DialogResult),
     FolderLookSearch(String),
+    /// Enter in the icon search: apply the icon when exactly one is left.
+    FolderLookSearchSubmit,
     /// Give the folders on the appearance page this look, or clear it with `None`.
     FolderLookSet(Option<FolderLook>),
     /// Use the installed icon theme at this index of the settings list.
@@ -451,11 +492,17 @@ pub enum Message {
     DialogPush(DialogPage, Option<widget::Id>),
     DialogUpdate(DialogPage),
     DialogUpdateComplete(DialogPage),
+    /// Copy the selected items next to themselves with Finder's " copy" names.
+    Duplicate(Option<Entity>),
     ExtractHere(Option<Entity>),
     ExtractTo(Option<Entity>),
     ExtractToResult(DialogResult),
     #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
     Focused(window::Id),
+    /// The default folder opener: the paths the system asks this app to open, and the setting
+    /// that makes it the app folders open in.
+    #[cfg(target_os = "macos")]
+    FolderOpener(crate::folder_opener_macos::Message),
     /// Hide the application, the way Cmd+H hides any other Mac app. Nothing to hide elsewhere.
     Hide,
     Key(window::Id, Modifiers, Key, Physical, Option<SmolStr>),
@@ -488,6 +535,8 @@ pub enum Message {
     #[cfg(feature = "notify")]
     Notification(Arc<Mutex<notify_rust::NotificationHandle>>),
     NotifyEvents(Vec<DebouncedEvent>),
+    /// Move the selected items into a new folder, then rename that folder.
+    NewFolderWithSelection(Option<Entity>),
     NotifyWatcher(WatcherWrapper),
     OpenTerminal(Option<Entity>),
     OpenInNewTab(Option<Entity>),
@@ -523,6 +572,8 @@ pub enum Message {
     PendingPauseAll(bool),
     PermanentlyDelete(Option<Entity>),
     Preview(Option<Entity>),
+    #[cfg(target_os = "macos")]
+    ToggleTag(Option<Entity>, usize),
     /// Leave, once the pending operations have finished.
     Quit,
     ReloadMimeAppCache,
@@ -544,10 +595,15 @@ pub enum Message {
     SearchActivate,
     SearchClear,
     SearchInput(String),
+    /// Colour the selected folders from the context menu, without opening the drawer.
+    SetFolderColour(Option<Entity>, Option<&'static str>),
+    SetContextQuickBar(bool),
     SetShowDetails(bool),
     SetShowRecents(bool),
     SetTypeToSearch(TypeToSearch),
     StatusBar(status_bar::Message),
+    /// Share the selected items through the system share menu or AirDrop. macOS only.
+    Share(Option<Entity>, ShareVia),
     SystemThemeModeChange,
     Size(window::Id, Size),
     /// A window reported how many physical pixels it draws per logical pixel.
@@ -574,6 +630,7 @@ pub enum Message {
     ToggleFoldersFirst,
     ToggleShowHidden,
     Undo(usize),
+    History(crate::undo::Message),
     UndoTrash(widget::ToastId, Arc<[PathBuf]>),
     UndoTrashStart(Vec<TrashItem>),
     WindowClose,
@@ -850,6 +907,9 @@ pub struct App {
     /// The icon theme the app's icons were last built with.
     icon_theme: String,
     folder_appearance: Option<FolderAppearance>,
+    /// Where the icon theme gallery's back button goes: Settings, or the folder drawer
+    /// that opened it.
+    icon_themes_return: ContextPage,
     compio_tx: mpsc::Sender<Pin<Box<dyn Future<Output = ()> + Send>>>,
     context_page: ContextPage,
     dialog_pages: DialogPages,
@@ -874,6 +934,7 @@ pub struct App {
     overlap: FxHashMap<String, (window::Id, Rectangle)>,
     pending_operation_id: u64,
     pending_operations: BTreeMap<u64, (Operation, Controller)>,
+    history: crate::undo::History,
     progress_operations: BTreeSet<u64>,
     status_bar: StatusBar,
     complete_operations: BTreeMap<u64, Operation>,
@@ -886,6 +947,13 @@ pub struct App {
     /// Dock comes back to it. Nothing on disk remembers a location between runs.
     #[cfg(target_os = "macos")]
     last_tab_location: Option<Location>,
+    #[cfg(target_os = "macos")]
+    folder_opener: crate::folder_opener_macos::FolderOpener,
+    /// The tab `init` opened for want of anything else, and where. The folder the system then
+    /// delivers is the one this process was started for, so it replaces that tab rather than
+    /// sitting beside it, as long as the tab is still alone and has not been navigated.
+    #[cfg(target_os = "macos")]
+    launch_tab: Option<(Entity, Location)>,
     scrollable_id: widget::Id,
     /// Physical pixels per logical pixel, per window. A window missing from the map has not
     /// reported its scale factor yet and is treated as 1.0.
@@ -1423,6 +1491,7 @@ impl App {
         let compio_tx = self.compio_tx.clone();
 
         self.pending_operation_id += 1;
+        self.history.started(id, &operation, &crate::undo::Disk);
         if operation.show_progress_notification() {
             self.progress_operations.insert(id);
         }
@@ -1453,6 +1522,117 @@ impl App {
             }
         }))
         .map(cosmic::Action::App)
+    }
+
+    /// Trash entries whose original paths are among `paths`.
+    fn find_in_trash(
+        &self,
+        paths: Arc<[PathBuf]>,
+    ) -> impl Future<Output = Vec<TrashItem>> + Send + 'static {
+        // macOS has no readable Trash listing, so the items come from the trash journal.
+        #[cfg(target_os = "macos")]
+        {
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    crate::trash_macos::journal_path()
+                        .map(|journal| {
+                            crate::trash_macos::items_for_originals(&journal, &paths)
+                        })
+                        .unwrap_or_default()
+                })
+                .await
+                .unwrap_or_else(|err| {
+                    log::warn!("failed to read the trash journal: {err}");
+                    Vec::new()
+                })
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+        let icon_sizes = self.config.tab.icon_sizes;
+        async move {
+            let mut found = Vec::with_capacity(paths.len());
+            match tokio::task::spawn_blocking(move || Location::Trash.scan(icon_sizes)).await {
+                Ok((_parent_item_opt, items)) => {
+                    for path in &*paths {
+                        for item in &items {
+                            if let ItemMetadata::Trash { ref entry, .. } = item.metadata
+                                && &entry.original_path() == path
+                            {
+                                found.push(entry.clone());
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    log::warn!("failed to rescan: {err}");
+                }
+            }
+            found
+        }
+        }
+    }
+
+    /// Undo or redo a step, or run the restore an undo planned.
+    fn history_update(&mut self, message: crate::undo::Message) -> Task<Message> {
+        use crate::undo::{Message as HistoryMessage, Plan};
+        let redo = matches!(message, HistoryMessage::Redo);
+        let result = match message {
+            HistoryMessage::Undo | HistoryMessage::Redo if self.editing_text() => {
+                return Task::none();
+            }
+            HistoryMessage::Undo => self.history.undo(&crate::undo::Disk),
+            HistoryMessage::Redo => self.history.redo(&crate::undo::Disk),
+            HistoryMessage::Restore(replay, items) => {
+                if items.is_empty() {
+                    self.history.abandon(replay);
+                    return self.toast(replay.refused_text(fl!("undo-refused-not-in-trash")));
+                }
+                return self.replay_operation(replay, Operation::Restore { items });
+            }
+        };
+        match result {
+            None => Task::none(),
+            Some(Ok((replay, Plan::Operations(ops)))) => Task::batch(
+                ops.into_iter()
+                    .map(|op| self.replay_operation(replay, op))
+                    .collect::<Vec<_>>(),
+            ),
+            Some(Ok((replay, Plan::Restore(paths)))) => {
+                let found = self.find_in_trash(paths.into());
+                cosmic::task::future(async move {
+                    Message::History(HistoryMessage::Restore(replay, found.await))
+                })
+            }
+            Some(Err((kind, refusal))) => self.toast(refusal.message(kind, redo)),
+        }
+    }
+
+    /// Whether a text field may have the keyboard: a dialog is open or the location is being
+    /// edited. A focused text input already captures Cmd+Z before it reaches the key binds; this
+    /// also covers the moments when it is shown but its focus task has not run yet.
+    fn editing_text(&self) -> bool {
+        self.dialog_pages.front().is_some()
+            || self
+                .tab_model
+                .active_data::<Tab>()
+                .is_some_and(|tab| tab.edit_location.is_some())
+    }
+
+    /// Run an operation for undo or redo, so it is not recorded as a new step.
+    fn replay_operation(
+        &mut self,
+        replay: crate::undo::Replay,
+        operation: Operation,
+    ) -> Task<Message> {
+        self.history.replaying(self.pending_operation_id, replay);
+        self.operation(operation)
+    }
+
+    fn toast(&mut self, text: String) -> Task<Message> {
+        self.toasts
+            .push(widget::toaster::Toast::new(text))
+            .map(cosmic::Action::App)
     }
 
     /// Will join operations together into a single task that will return a single
@@ -1493,6 +1673,9 @@ impl App {
         let mut commands = Vec::with_capacity(4 * completed.len());
         let mut op_sel = OperationSelection::default();
         for (id, op_sel_pending) in completed {
+            if let Some((op, _)) = self.pending_operations.get(&id) {
+                self.history.completed(id, op, &op_sel_pending);
+            }
             op_sel.ignored.extend(op_sel_pending.ignored);
             op_sel.selected.extend(op_sel_pending.selected);
             if let Some((op, _)) = self.pending_operations.remove(&id) {
@@ -1527,6 +1710,10 @@ impl App {
                     commands.push(self.move_folder_looks([(from, to)].as_slice()));
                 } else if let Operation::Move {
                     ref paths, ref to, ..
+                }
+                | Operation::NewFolderWithItems {
+                    ref paths,
+                    path: ref to,
                 } = op
                 {
                     let path_changes: Box<[_]> = paths
@@ -1541,6 +1728,11 @@ impl App {
 
                 if matches!(op, Operation::RemoveFromRecents { .. }) {
                     commands.push(self.rescan_recents());
+                }
+
+                // Finder puts the new folder straight into rename.
+                if let Operation::NewFolderWithItems { ref path, .. } = op {
+                    commands.push(self.rename_dialog(path.clone()));
                 }
 
                 self.complete_operations.insert(id, op);
@@ -1577,9 +1769,15 @@ impl App {
         let mut tasks = Vec::new();
         let mut failed = Vec::new();
         for (id, err) in errors.into_iter() {
+            let replay = self.history.failed(id);
             if let Some((op, controller)) = self.pending_operations.remove(&id) {
-                // Only show dialog if not cancelled
-                if !controller.is_cancelled() {
+                // An undo or redo that fails reports in a toast, like one refused up front.
+                if let Some(replay) = replay
+                    && !controller.is_cancelled()
+                {
+                    tasks.push(self.toast(replay.refused_text(err.to_string())));
+                } else if !controller.is_cancelled() {
+                    // Only show dialog if not cancelled
                     match err.kind {
                         OperationErrorType::Generic(_) => failed.push(id),
                         OperationErrorType::PasswordRequired => {
@@ -1854,6 +2052,29 @@ impl App {
         Task::none()
     }
 
+    /// Open the rename dialog for one item, with its name selected up to the extension.
+    fn rename_dialog(&mut self, path: PathBuf) -> Task<Message> {
+        let (Some(parent), Some(name)) = (
+            path.parent().map(Path::to_path_buf),
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string),
+        ) else {
+            return Task::none();
+        };
+        let dir = path.is_dir();
+        Task::batch([
+            self.dialog_pages.push_back(DialogPage::RenameItem {
+                from: path,
+                parent,
+                name: name.clone(),
+                dir,
+            }),
+            widget::text_input::focus(self.dialog_text_input.clone()),
+            widget::text_input::select_until_last(self.dialog_text_input.clone(), &name, '.'),
+        ])
+    }
+
     fn selected_paths(
         &self,
         entity_opt: Option<Entity>,
@@ -1975,6 +2196,9 @@ impl App {
                 .divider_above()
         });
 
+        // The Network entry browses `network:///` through gvfs. On macOS no mounter can browse
+        // it yet, so the entry stays hidden there until Connect to Server lands.
+        #[cfg(not(target_os = "macos"))]
         if !MOUNTERS.is_empty() {
             nav_model = nav_model.insert(|b| {
                 b.text(fl!("networks"))
@@ -2389,14 +2613,21 @@ impl App {
         let tab_config = self.config.tab;
 
         // TODO: Should dialog be updated here too?
-        settings::view_column(vec![
+        #[allow(unused_mut)]
+        let mut sections = vec![
             settings::section()
                 .title(fl!("appearance"))
                 .add({
-                    let app_theme_selected = match self.config.app_theme {
+                    let app_theme_selected = match &self.config.app_theme {
                         AppTheme::Dark => 1,
                         AppTheme::Light => 2,
                         AppTheme::System => 0,
+                        // A theme that has since left the search path has no row to
+                        // select; show the system entry, which is what it resolves to.
+                        AppTheme::Named(name) => theme_catalog::themes()
+                            .iter()
+                            .position(|theme| &theme.name == name)
+                            .map_or(0, |index| index + BUILT_IN_APP_THEMES),
                     };
                     settings::item::builder(fl!("theme")).control(widget::dropdown(
                         &self.app_themes,
@@ -2405,7 +2636,12 @@ impl App {
                             Message::AppTheme(match index {
                                 1 => AppTheme::Dark,
                                 2 => AppTheme::Light,
-                                _ => AppTheme::System,
+                                0 => AppTheme::System,
+                                index => theme_catalog::themes()
+                                    .get(index - BUILT_IN_APP_THEMES)
+                                    .map_or(AppTheme::System, |theme| {
+                                        AppTheme::Named(theme.name.clone())
+                                    }),
                             })
                         },
                     ))
@@ -2464,8 +2700,17 @@ impl App {
                         .toggler(self.config.show_recents, Message::SetShowRecents)
                 })
                 .into(),
-        ])
-        .into()
+            settings::section()
+                .title(fl!("context-menu"))
+                .add(
+                    settings::item::builder(fl!("context-quick-bar"))
+                        .toggler(self.config.context_quick_bar, Message::SetContextQuickBar),
+                )
+                .into(),
+        ];
+        #[cfg(target_os = "macos")]
+        sections.push(self.folder_opener.view().map(Message::FolderOpener));
+        settings::view_column(sections).into()
     }
 
     // Update favorites based on renaming or moving dirs.
@@ -2775,7 +3020,14 @@ impl Application for App {
             }
         }
 
-        let app_themes = vec![fl!("match-desktop"), fl!("dark"), fl!("light")];
+        // The built-ins come first and in a fixed order, so BUILT_IN_APP_THEMES is what
+        // separates a dropdown row from an index into the discovered themes.
+        let mut app_themes = vec![fl!("match-desktop"), fl!("dark"), fl!("light")];
+        app_themes.extend(
+            theme_catalog::themes()
+                .iter()
+                .map(|theme| theme.name.clone()),
+        );
         folder_look::set_looks(&flags.config.folder_looks);
 
         let key_binds = key_binds_with_overrides(&flags.mode.tab_mode(), &flags.config.keybinds);
@@ -2828,6 +3080,10 @@ impl Application for App {
             swipe: crate::gesture::Swipe::default(),
             #[cfg(target_os = "macos")]
             zoom: crate::gesture::Zoom::default(),
+            #[cfg(target_os = "macos")]
+            folder_opener: crate::folder_opener_macos::FolderOpener::new(),
+            #[cfg(target_os = "macos")]
+            launch_tab: None,
             nav_bar_context_id: segmented_button::Entity::null(),
             nav_model: segmented_button::ModelBuilder::default().build(),
             tab_model: segmented_button::ModelBuilder::default().build(),
@@ -2841,6 +3097,7 @@ impl Application for App {
             icon_theme_gallery: icon_theme_gallery::Gallery::default(),
             icon_theme: cosmic::icon_theme::default(),
             folder_appearance: None,
+            icon_themes_return: ContextPage::Settings,
             compio_tx,
             context_page: ContextPage::Preview(None, PreviewKind::Selected),
             dialog_pages: DialogPages::new(),
@@ -2859,6 +3116,7 @@ impl Application for App {
             overlap: FxHashMap::default(),
             pending_operation_id: 0,
             pending_operations: BTreeMap::new(),
+            history: crate::undo::History::default(),
             progress_operations: BTreeSet::new(),
             status_bar: StatusBar::default(),
             complete_operations: BTreeMap::new(),
@@ -2892,7 +3150,18 @@ impl Application for App {
 
         let mut commands = vec![app.update_config(), app.update(Message::CheckClipboard)];
 
-        for location in flags.locations {
+        #[allow(unused_mut)]
+        let mut locations = flags.locations;
+        // The folder a Dock click or `open -a` launched this process for arrives from AppKit
+        // before the app exists, and is opened like a command-line path, in place of the
+        // working directory the launch would otherwise show.
+        #[cfg(target_os = "macos")]
+        locations.extend(
+            crate::appkit_macos::take_launch_documents()
+                .into_iter()
+                .map(Location::Path),
+        );
+        for location in locations {
             if let Some(path) = location.path_opt()
                 && path.is_file()
                 && let Some(parent) = path.parent()
@@ -2923,6 +3192,16 @@ impl Application for App {
                 commands.push(app.open_tab(Location::Path(current_dir), true, None));
             } else {
                 commands.push(app.open_tab(Location::Path(home_dir()), true, None));
+            }
+            // AppKit may still be about to deliver the folder this process was launched for,
+            // in which case this placeholder gives way to it.
+            #[cfg(target_os = "macos")]
+            {
+                let entity = app.tab_model.active();
+                app.launch_tab = app
+                    .tab_model
+                    .data::<Tab>(entity)
+                    .map(|tab| (entity, tab.location.clone()));
             }
         }
 
@@ -3382,11 +3661,10 @@ impl Application for App {
                     ClipboardCopy::new(ClipboardKind::Copy, self.selected_paths(entity_opt));
                 return clipboard::write_data(contents);
             }
-            Message::CopyPath(entity_opt) => {
-                let paths = self.selected_paths(entity_opt);
-                let path_strings: Vec<String> =
-                    paths.into_iter().map(|p| p.display().to_string()).collect();
-                let text = path_strings.join("\n");
+            Message::CopyPath(entity_opt, variant) => {
+                let paths: Vec<PathBuf> = self.selected_paths(entity_opt).collect();
+                let home = dirs::home_dir().unwrap_or_default();
+                let text = copy_path::format_paths(&paths, variant, &home);
                 return clipboard::write(text);
             }
             Message::CopyTo(entity_opt) => {
@@ -3418,19 +3696,49 @@ impl Application for App {
                 self.file_dialog_opt = None;
             }
             Message::CustomizeFolder(entity_opt) => {
-                let paths: Vec<PathBuf> = self
+                let mut paths: Vec<PathBuf> = self
                     .selected_paths(entity_opt)
                     .filter(|path| path.is_dir())
                     .collect();
+                if paths.is_empty() {
+                    // From the background menu: customize the folder being viewed.
+                    let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                    if let Some(Location::Path(path)) =
+                        self.tab_model.data::<Tab>(entity).map(|tab| &tab.location)
+                    {
+                        paths.push(path.clone());
+                    }
+                }
                 if !paths.is_empty() {
                     self.load_icon_themes();
-                    self.folder_appearance = Some(FolderAppearance::new(paths, &self.icon_themes));
+                    self.folder_appearance = Some(FolderAppearance::new(
+                        paths,
+                        &self.icon_themes,
+                        self.config.recent_folder_looks.clone(),
+                    ));
                     self.context_page = ContextPage::FolderAppearance;
                     self.set_show_context(true);
                 }
             }
             Message::FolderLookChooseImage => {
                 return self.choose_folder_image();
+            }
+            Message::SetFolderColour(entity_opt, colour) => {
+                let mut looks = self.config.folder_looks.clone();
+                for path in self.selected_paths(entity_opt).filter(|path| path.is_dir()) {
+                    match colour {
+                        Some(id) => {
+                            looks.insert(path, FolderLook::Colour(id.to_string()));
+                        }
+                        // "None" takes the colour away; an icon or image look stays.
+                        None => {
+                            if matches!(looks.get(&path), Some(FolderLook::Colour(_))) {
+                                looks.remove(&path);
+                            }
+                        }
+                    }
+                }
+                return self.set_folder_looks(looks);
             }
             Message::FolderLookIconSet(index) => {
                 if let Some(page) = &mut self.folder_appearance {
@@ -3460,7 +3768,41 @@ impl Application for App {
                     page.set_search(search);
                 }
             }
+            Message::FolderLookSearchSubmit => {
+                if let Some(look) = self
+                    .folder_appearance
+                    .as_ref()
+                    .and_then(FolderAppearance::single_match)
+                {
+                    return self.update(Message::FolderLookSet(Some(look)));
+                }
+            }
             Message::FolderLookSet(look) => {
+                if self.folder_appearance.is_none() {
+                    return Task::none();
+                }
+                if let Some(icon @ FolderLook::Icon { .. }) = &look {
+                    // Remember icon picks for the drawer's Recent row.
+                    let mut recent = self.config.recent_folder_looks.clone();
+                    folder_look::push_recent(&mut recent, icon.clone());
+                    if recent != self.config.recent_folder_looks {
+                        match &self.config_handler {
+                            Some(config_handler) => {
+                                if let Err(err) =
+                                    self.config.set_recent_folder_looks(config_handler, recent)
+                                {
+                                    log::warn!(
+                                        "failed to save config \"recent_folder_looks\": {err}"
+                                    );
+                                }
+                            }
+                            None => self.config.recent_folder_looks = recent,
+                        }
+                        if let Some(page) = &mut self.folder_appearance {
+                            page.set_recent(self.config.recent_folder_looks.clone());
+                        }
+                    }
+                }
                 let Some(page) = &self.folder_appearance else {
                     return Task::none();
                 };
@@ -4307,6 +4649,36 @@ impl Application for App {
                     }
                 }
             }
+            Message::Duplicate(entity_opt) => {
+                let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                if self
+                    .tab_model
+                    .data::<Tab>(entity)
+                    .is_none_or(|tab| tab.location.is_trash())
+                {
+                    return Task::none();
+                }
+                let paths: Vec<_> = self.selected_paths(entity_opt).collect();
+                if !paths.is_empty() {
+                    return self.operation(Operation::Duplicate { paths });
+                }
+            }
+            Message::NewFolderWithSelection(entity_opt) => {
+                let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                let Some(parent) = self
+                    .tab_model
+                    .data::<Tab>(entity)
+                    .and_then(|tab| tab.location.path_opt().cloned())
+                else {
+                    return Task::none();
+                };
+                let paths: Vec<_> = self.selected_paths(entity_opt).collect();
+                // Only items that live in the folder on screen, as in Finder.
+                if !paths.is_empty() && paths.iter().all(|p| p.parent() == Some(&parent)) {
+                    let path = crate::duplicate::new_folder_with_items_path(&parent);
+                    return self.operation(Operation::NewFolderWithItems { path, paths });
+                }
+            }
             Message::NewItem(entity_opt, dir) => {
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
                 if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
@@ -4846,6 +5218,15 @@ impl Application for App {
                     );
                 }
             }
+            #[cfg(target_os = "macos")]
+            Message::ToggleTag(entity_opt, index) => {
+                let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
+                    && let Some(items) = tab.items_opt_mut()
+                {
+                    crate::tags_macos::toggle_selected(items, index);
+                }
+            }
             Message::Preview(entity_opt) => {
                 match self.mode {
                     Mode::App => {
@@ -4987,6 +5368,23 @@ impl Application for App {
                     tab::reveal_in_finder(&path);
                 }
             }
+            Message::Share(entity_opt, via) => {
+                let paths: Vec<_> = self.selected_paths(entity_opt).collect();
+                let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                let window_id = self
+                    .tab_model
+                    .data::<Tab>(entity)
+                    .and_then(|tab| self.tab_window_id(tab));
+                #[cfg(target_os = "macos")]
+                if let Some(window_id) = window_id {
+                    return match via {
+                        ShareVia::Picker => crate::share_macos::show_picker(window_id, paths),
+                        ShareVia::AirDrop => crate::share_macos::send_via_airdrop(window_id, paths),
+                    };
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = (paths, window_id, via);
+            }
             Message::RestoreFromTrash(entity_opt) => {
                 let mut trash_items = Vec::new();
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
@@ -5037,6 +5435,10 @@ impl Application for App {
             }
             Message::SetShowRecents(show_recents) => {
                 config_set!(show_recents, show_recents);
+                return self.update_config();
+            }
+            Message::SetContextQuickBar(context_quick_bar) => {
+                config_set!(context_quick_bar, context_quick_bar);
                 return self.update_config();
             }
             Message::StatusBar(message) => {
@@ -5449,8 +5851,20 @@ impl Application for App {
             }
             Message::ToggleContextPage(context_page) => {
                 match context_page {
-                    ContextPage::Settings => self.load_icon_themes(),
+                    ContextPage::Settings => {
+                        self.load_icon_themes();
+                        // Another app, or `duti`, may have changed it since the last look.
+                        #[cfg(target_os = "macos")]
+                        self.folder_opener.refresh();
+                    }
                     ContextPage::IconThemes => {
+                        self.icon_themes_return = if self.core.window.show_context
+                            && self.context_page == ContextPage::FolderAppearance
+                        {
+                            ContextPage::FolderAppearance
+                        } else {
+                            ContextPage::Settings
+                        };
                         self.load_icon_themes();
                         self.icon_theme_gallery.refresh(&self.icon_themes);
                     }
@@ -5472,44 +5886,59 @@ impl Application for App {
                     )));
                 }
             }
-            Message::Undo(_id) => {
-                // TODO: undo
-            }
+            // Upstream reserved the id for the edit history page, which never sends it; any id
+            // undoes the most recent step.
+            Message::Undo(_id) => return self.update(Message::History(crate::undo::Message::Undo)),
+            Message::History(message) => return self.history_update(message),
             Message::UndoTrash(id, recently_trashed) => {
                 self.toasts.remove(id);
-
-                let mut paths = Vec::with_capacity(recently_trashed.len());
-                let icon_sizes = self.config.tab.icon_sizes;
-
-                return cosmic::task::future(async move {
-                    match tokio::task::spawn_blocking(move || Location::Trash.scan(icon_sizes))
-                        .await
-                    {
-                        Ok((_parent_item_opt, items)) => {
-                            for path in &*recently_trashed {
-                                for item in &items {
-                                    if let ItemMetadata::Trash { ref entry, .. } = item.metadata {
-                                        let original_path = entry.original_path();
-                                        if &original_path == path {
-                                            paths.push(entry.clone());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            log::warn!("failed to rescan: {err}");
-                        }
-                    }
-
-                    Message::UndoTrashStart(paths)
-                });
+                self.history.forget_trashed(&recently_trashed);
+                let found = self.find_in_trash(recently_trashed);
+                return cosmic::task::future(async move { Message::UndoTrashStart(found.await) });
             }
             Message::UndoTrashStart(items) => {
                 return self.operation(Operation::Restore { items });
             }
             Message::WindowClose => return self.close_main_window(false),
             Message::Quit => return self.close_main_window(true),
+            #[cfg(target_os = "macos")]
+            Message::FolderOpener(message) => {
+                use crate::folder_opener_macos::{self, open_targets};
+                return match message {
+                    // The tabs are the application's, so the paths are opened here.
+                    folder_opener_macos::Message::Opened(paths) => {
+                        let paths: Vec<PathBuf> = paths
+                            .into_iter()
+                            .map(|path| fs::canonicalize(&path).unwrap_or(path))
+                            .collect();
+                        // The placeholder tab from `init` makes way for the launch folder. Once
+                        // it has been navigated, or has company, it is the user's and stays.
+                        let placeholder = self.launch_tab.take().filter(|(entity, location)| {
+                            self.tab_model.len() == 1
+                                && self
+                                    .tab_model
+                                    .data::<Tab>(*entity)
+                                    .is_some_and(|tab| tab.location == *location)
+                        });
+                        let mut tasks: Vec<_> = open_targets(&paths, |path| path.is_dir())
+                            .into_iter()
+                            .map(|target| self.open_tab(target.location, true, target.selection))
+                            .collect();
+                        if let Some((entity, _)) = placeholder
+                            && !tasks.is_empty()
+                        {
+                            log::info!("replacing the launch tab with the opened folder");
+                            self.tab_model.remove(entity);
+                            tasks.push(self.update_watcher());
+                        }
+                        Task::batch(tasks)
+                    }
+                    message => self
+                        .folder_opener
+                        .update(message)
+                        .map(|message| cosmic::action::app(Message::FolderOpener(message))),
+                };
+            }
             Message::Hide => {
                 // Only macOS has an application to hide; the binding exists nowhere else.
                 #[cfg(target_os = "macos")]
@@ -6255,18 +6684,26 @@ impl Application for App {
                 ),
                 Message::ToggleContextPage(ContextPage::FolderAppearance),
             )
-            .title(fl!("folder-appearance")),
+            .title(fl!("customize-folder-title"))
+            .actions(self.folder_appearance.as_ref().map_or_else(
+                || widget::space::horizontal().into(),
+                FolderAppearance::actions,
+            )),
             ContextPage::IconThemes => context_drawer::context_drawer(
                 self.icon_theme_gallery
                     .view(&self.icon_themes, &self.icon_theme),
                 Message::ToggleContextPage(ContextPage::IconThemes),
             )
             .title(fl!("icon-themes"))
-            .actions(
-                widget::button::text(fl!("settings"))
+            .actions({
+                let label = match self.icon_themes_return {
+                    ContextPage::FolderAppearance => fl!("customize-folder-title"),
+                    _ => fl!("settings"),
+                };
+                widget::button::text(label)
                     .leading_icon(widget::icon::from_name("go-previous-symbolic"))
-                    .on_press(Message::ToggleContextPage(ContextPage::Settings)),
-            ),
+                    .on_press(Message::ToggleContextPage(self.icon_themes_return.clone()))
+            }),
         })
     }
 
@@ -7233,6 +7670,8 @@ impl Application for App {
             &self.modifiers,
             &self.key_binds,
             self.clipboard_has_content(),
+            self.history.next_undo(),
+            self.history.next_redo(),
         )]
     }
 
@@ -7325,6 +7764,7 @@ impl Application for App {
                     &self.modifiers,
                     self.clipboard_has_content(),
                     &self.config.context_actions,
+                    self.config.context_quick_bar,
                 )
                 .map(move |message| Message::TabMessage(Some(entity), message));
             tab_column = tab_column.push(tab_view);
@@ -7355,6 +7795,7 @@ impl Application for App {
                                 &window.modifiers,
                                 self.clipboard_has_content(),
                                 &self.config.context_actions,
+                                self.config.context_quick_bar,
                             )
                             .map(move |message| Message::TabMessage(Some(*entity), message)),
                         None => widget::space::vertical().into(),
@@ -7886,6 +8327,12 @@ impl Application for App {
         subscriptions.push(crate::appkit_macos::activation_subscription().map(|_| Message::Reopen));
         #[cfg(target_os = "macos")]
         subscriptions.push(crate::appkit_macos::quit_subscription().map(|_| Message::Quit));
+        #[cfg(target_os = "macos")]
+        subscriptions.push(
+            crate::appkit_macos::open_documents_subscription().map(|documents| {
+                Message::FolderOpener(crate::folder_opener_macos::Message::Opened(documents.0))
+            }),
+        );
 
         Subscription::batch(subscriptions)
     }
@@ -7965,7 +8412,7 @@ pub(crate) mod test_utils {
     use std::path::Path;
 
     use log::{debug, trace};
-    use tempfile::{TempDir, tempdir};
+    use tempfile::{TempDir, tempdir_in};
 
     use crate::config::{IconSizes, TabConfig, ThumbCfg};
     use crate::tab::Item;
@@ -8012,6 +8459,12 @@ pub(crate) mod test_utils {
     /// * `dirs` - Number of directories to create
     /// * `nested` - Number of nested directories to create in new dirs
     /// * `name_len` - Length of randomized directory names
+    /// A temp dir under the canonical temp path. Tabs canonicalize their location, and
+    /// on macOS the temp dir is under `/var`, a symlink to `/private/var`.
+    fn canonical_tempdir() -> io::Result<TempDir> {
+        tempdir_in(fs::canonicalize(std::env::temp_dir())?)
+    }
+
     pub fn simple_fs(
         files: usize,
         hidden: usize,
@@ -8021,7 +8474,7 @@ pub(crate) mod test_utils {
     ) -> io::Result<TempDir> {
         // Files created inside of a TempDir are deleted with the directory
         // TempDir won't leak resources as long as the destructor runs
-        let root = tempdir()?;
+        let root = canonical_tempdir()?;
         debug!("Root temp directory: {}", root.as_ref().display());
         trace!(
             "Creating {files} files and {hidden} hidden files in {dirs} temp dirs with {nested} nested temp dirs"
@@ -8066,7 +8519,7 @@ pub(crate) mod test_utils {
 
     /// Empty file hierarchy
     pub fn empty_fs() -> io::Result<TempDir> {
-        tempdir()
+        canonical_tempdir()
     }
 
     /// Sort files.

@@ -832,7 +832,7 @@ dependencies = [
 [[package]]
 name = "build_helpers"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "cfg_aliases",
 ]
@@ -1018,7 +1018,6 @@ dependencies = [
 [[package]]
 name = "clipboard_macos"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/window_clipboard.git?tag=sctk-0.20#f68595ee0e62fbd6589f4709b5aaa5c3c7ea5f6c"
 dependencies = [
  "objc",
  "objc-foundation",
@@ -1028,7 +1027,6 @@ dependencies = [
 [[package]]
 name = "clipboard_wayland"
 version = "0.2.2"
-source = "git+https://github.com/pop-os/window_clipboard.git?tag=sctk-0.20#f68595ee0e62fbd6589f4709b5aaa5c3c7ea5f6c"
 dependencies = [
  "dnd",
  "mime 0.1.0",
@@ -1038,7 +1036,6 @@ dependencies = [
 [[package]]
 name = "clipboard_x11"
 version = "0.4.2"
-source = "git+https://github.com/pop-os/window_clipboard.git?tag=sctk-0.20#f68595ee0e62fbd6589f4709b5aaa5c3c7ea5f6c"
 dependencies = [
  "thiserror 1.0.69",
  "x11rb",
@@ -1365,7 +1362,7 @@ dependencies = [
 [[package]]
 name = "cosmic-config"
 version = "1.0.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "atomicwrites",
  "cosmic-config-derive",
@@ -1386,7 +1383,7 @@ dependencies = [
 [[package]]
 name = "cosmic-config-derive"
 version = "1.0.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -1433,16 +1430,19 @@ dependencies = [
  "num_enum",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-quick-look-thumbnailing",
  "objc2-uniform-type-identifiers",
  "open",
  "ordermap",
  "paste",
+ "plist",
  "png 0.18.1",
  "procfs",
  "recently-used-xbel",
  "regex",
+ "ron 0.12.2",
  "rust-embed",
  "rustc-hash 2.1.3",
  "serde",
@@ -1572,7 +1572,7 @@ dependencies = [
 [[package]]
 name = "cosmic-theme"
 version = "1.0.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "almost",
  "configparser",
@@ -2013,7 +2013,6 @@ dependencies = [
 [[package]]
 name = "dnd"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/window_clipboard.git?tag=sctk-0.20#f68595ee0e62fbd6589f4709b5aaa5c3c7ea5f6c"
 dependencies = [
  "bitflags 2.13.2",
  "mime 0.1.0",
@@ -3150,7 +3149,7 @@ dependencies = [
 [[package]]
 name = "iced"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "build_helpers",
  "dnd",
@@ -3172,7 +3171,7 @@ dependencies = [
 [[package]]
 name = "iced_accessibility"
 version = "0.1.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3181,7 +3180,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "bitflags 2.13.2",
  "build_helpers",
@@ -3207,7 +3206,7 @@ dependencies = [
 [[package]]
 name = "iced_debug"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "iced_core",
  "iced_futures",
@@ -3217,7 +3216,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "futures",
  "iced_core",
@@ -3231,7 +3230,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -3252,7 +3251,7 @@ dependencies = [
 [[package]]
 name = "iced_program"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "iced_graphics",
  "iced_runtime",
@@ -3261,7 +3260,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -3273,7 +3272,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "build_helpers",
  "bytes",
@@ -3289,7 +3288,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -3306,7 +3305,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "as-raw-xcb-connection",
  "bitflags 2.13.2",
@@ -3338,7 +3337,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.14.2"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "build_helpers",
  "cosmic-client-toolkit",
@@ -3357,7 +3356,7 @@ dependencies = [
 [[package]]
 name = "iced_winit"
 version = "0.14.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "build_helpers",
  "cosmic-client-toolkit",
@@ -4503,7 +4502,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "libcosmic"
 version = "1.0.0"
-source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#45614173104d13c997cdf890aa87e1968ccb0285"
+source = "git+https://github.com/shythulu/libcosmic.git?branch=macosmetic#7d4c90bad43307b0e4017222b1a09a53c1dd8392"
 dependencies = [
  "apply",
  "ashpd 0.12.3",
@@ -4860,7 +4859,6 @@ dependencies = [
 [[package]]
 name = "mime"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/window_clipboard.git?tag=sctk-0.20#f68595ee0e62fbd6589f4709b5aaa5c3c7ea5f6c"
 dependencies = [
  "smithay-clipboard",
 ]
@@ -5283,7 +5281,9 @@ dependencies = [
  "block2 0.6.2",
  "objc2 0.6.4",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "objc2-uniform-type-identifiers",
 ]
 
 [[package]]
@@ -5317,8 +5317,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
 dependencies = [
  "bitflags 2.13.2",
+ "dispatch2",
  "libc",
+ "objc2 0.6.4",
  "objc2-core-foundation",
+ "objc2-io-surface",
 ]
 
 [[package]]
@@ -5371,6 +5374,17 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "libc",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-io-surface"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
+dependencies = [
+ "bitflags 2.13.2",
  "objc2 0.6.4",
  "objc2-core-foundation",
 ]
@@ -5770,6 +5784,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "plist"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2896bade328c13f7042a297ea5ac5b0951f6cf989dea5f32c2fd98da398195cb"
+dependencies = [
+ "base64 0.23.1",
+ "indexmap 2.14.2",
+ "quick-xml 0.42.0",
+ "time",
+]
+
+[[package]]
 name = "png"
 version = "0.17.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6032,6 +6058,15 @@ name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
 dependencies = [
  "memchr",
 ]
@@ -8304,14 +8339,18 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 [[package]]
 name = "window_clipboard"
 version = "0.4.1"
-source = "git+https://github.com/pop-os/window_clipboard.git?tag=sctk-0.20#f68595ee0e62fbd6589f4709b5aaa5c3c7ea5f6c"
 dependencies = [
+ "block2 0.6.2",
  "clipboard-win",
  "clipboard_macos",
  "clipboard_wayland",
  "clipboard_x11",
  "dnd",
+ "log",
  "mime 0.1.0",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "raw-window-handle",
  "thiserror 1.0.69",
 ]

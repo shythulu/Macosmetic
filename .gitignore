@@ -11,4 +11,5 @@
 /vendor.tar
 /vendor/*
 !/vendor/freedesktop-icons/
+!/vendor/window_clipboard/
 .DS_Store

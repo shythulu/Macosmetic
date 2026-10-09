@@ -19,11 +19,18 @@
 //! Quit menu item, and with it Cmd+Q, to the application, so that a quit waits for the copies
 //! and moves still running.
 //!
+//! [`watch_open_documents`] receives the folders and files the system asks this application to
+//! open: a folder double-clicked in the Dock, `open <dir>` in a shell, Finder's Open With, and
+//! the paths an `open -a` launch carries. They reach the application through
+//! [`open_documents_subscription`], or through [`take_launch_documents`] for the ones that
+//! arrived while it was still starting.
+//!
 //! Reaching the `NSWindow` means going out through `raw_window_handle` to the `NSView` iced
 //! draws into, which is what [`with_ns_window`] wraps: it hands a live `NSWindow` to a closure
 //! on the main thread, or yields nothing if there is no window to hand over. AppKit calls back
 //! into us synchronously, so nothing in here may touch application state.
 
+use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -35,13 +42,15 @@ use cosmic::iced::runtime::window::run_with_handle;
 use cosmic::iced::window::Id as WindowId;
 use cosmic::iced::{Subscription, Task};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationDidBecomeActiveNotification, NSColorSpace, NSMenu, NSView, NSWindow,
+    NSApplication, NSApplicationDelegate, NSApplicationDidBecomeActiveNotification,
+    NSApplicationWillFinishLaunchingNotification, NSColorSpace, NSMenu, NSView, NSWindow,
 };
 use objc2_foundation::{
-    NSDictionary, NSNotification, NSNotificationCenter, NSUserDefaults, ns_string,
+    NSAppleEventDescriptor, NSAppleEventManager, NSArray, NSDictionary, NSNotification,
+    NSNotificationCenter, NSURL, NSUserDefaults, ns_string,
 };
 
 /// Turn off AppKit's autofill heuristics. Call once, before the event loop starts; a default
@@ -86,10 +95,10 @@ static ACTIVATIONS: Mutex<Option<mpsc::UnboundedReceiver<Activated>>> = Mutex::n
 /// Start watching for the application being activated. Call once, on the main thread, before
 /// the first [`activation_subscription`] runs; the observer lives for the rest of the process.
 ///
-/// This observes a notification rather than implementing `applicationShouldHandleReopen:`,
-/// because winit owns the application delegate and replacing it would take the rest of the
-/// delegate's work with it. The cost is that an activation is only reported when the
-/// application was not already frontmost.
+/// This observes a notification rather than implementing `applicationShouldHandleReopen:` on
+/// the delegate [`watch_open_documents`] installs, because the delegate may not be ours if
+/// something else claimed the slot first. The cost is that an activation is only reported when
+/// the application was not already frontmost.
 pub fn watch_activation() {
     let Some(_mtm) = MainThreadMarker::new() else {
         log::warn!("activation observer not installed: not on the main thread");
@@ -239,6 +248,224 @@ pub fn quit_subscription() -> Subscription<QuitRequested> {
     Subscription::run(|| {
         // The receiver is taken once; a restarted subscription gets an empty stream.
         let rx = QUIT_CHANNEL.1.lock().unwrap().take();
+        futures::stream::iter(rx).flatten()
+    })
+}
+
+/// Paths the system asked this application to open, in the order they were sent. Folders are
+/// to be browsed; files are to be shown in their folder.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenDocuments(pub Vec<PathBuf>);
+
+/// The open-documents channel: the sending end for the delegate and the event handler, and
+/// the receiving end parked until it is claimed. It exists from first use, because the paths an
+/// `open -a` launch carries arrive before the application has started, and are held here until
+/// [`take_launch_documents`] or [`open_documents_subscription`] asks for them.
+static OPEN_DOCUMENTS: LazyLock<(
+    mpsc::UnboundedSender<OpenDocuments>,
+    Mutex<Option<mpsc::UnboundedReceiver<OpenDocuments>>>,
+)> = LazyLock::new(|| {
+    let (tx, rx) = mpsc::unbounded();
+    (tx, Mutex::new(Some(rx)))
+});
+
+/// The four-character codes of the open-documents Apple Event: event class `aevt`, event ID
+/// `odoc`, and the `----` keyword of its direct object, the list of files.
+const CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
+const OPEN_DOCUMENTS_EVENT: u32 = u32::from_be_bytes(*b"odoc");
+const DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
+
+/// Hand the file URLs AppKit delivered to the application. Anything that is not a file URL is
+/// dropped with a log line; AppKit does not send those for folders.
+fn deliver_urls(urls: impl IntoIterator<Item = Retained<NSURL>>) {
+    let paths: Vec<PathBuf> = urls
+        .into_iter()
+        .filter_map(|url| {
+            // SAFETY: `path` reads an immutable property of a URL this call owns.
+            let path = url.isFileURL().then(|| url.path()).flatten();
+            if path.is_none() {
+                log::warn!("ignoring a non-file URL the system asked us to open");
+            }
+            path.map(|path| PathBuf::from(path.to_string()))
+        })
+        .collect();
+    log::info!("asked to open {paths:?}");
+    if !paths.is_empty() {
+        // AppKit calls this while the application may already be borrowed, so handing the
+        // paths to the channel is all this may do.
+        let _ = OPEN_DOCUMENTS.0.unbounded_send(OpenDocuments(paths));
+    }
+}
+
+define_class!(
+    /// The application delegate. winit 0.31 does not install one, and leaves this slot to the
+    /// application, so this is where `application:openURLs:` arrives.
+    // SAFETY: `NSObject` has no subclassing requirements, and `AppDelegate` does not implement
+    // `Drop`.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "MacosmeticAppDelegate"]
+    struct AppDelegate;
+
+    unsafe impl NSObjectProtocol for AppDelegate {}
+
+    unsafe impl NSApplicationDelegate for AppDelegate {
+        #[unsafe(method(application:openURLs:))]
+        fn application_open_urls(&self, _application: &NSApplication, urls: &NSArray<NSURL>) {
+            deliver_urls(urls.iter());
+        }
+    }
+);
+
+impl AppDelegate {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        // SAFETY: `init` is `NSObject`'s designated initialiser.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+define_class!(
+    /// The handler for the `odoc` Apple Event, used only when some other object already holds
+    /// the application delegate. It reads the same file list the delegate would be handed.
+    // SAFETY: as for `AppDelegate`.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "MacosmeticOpenDocumentsHandler"]
+    struct OpenDocumentsHandler;
+
+    impl OpenDocumentsHandler {
+        #[unsafe(method(handleOpenDocuments:withReplyEvent:))]
+        fn handle_open_documents(
+            &self,
+            event: &NSAppleEventDescriptor,
+            _reply: &NSAppleEventDescriptor,
+        ) {
+            deliver_urls(direct_object_urls(event));
+        }
+    }
+);
+
+impl OpenDocumentsHandler {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        // SAFETY: `init` is `NSObject`'s designated initialiser.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// The file URLs in an `odoc` event's direct object, which is a list of file descriptors.
+fn direct_object_urls(event: &NSAppleEventDescriptor) -> Vec<Retained<NSURL>> {
+    // SAFETY: `paramDescriptorForKeyword:` takes an `AEKeyword`, a four-character code that is
+    // a `u32`, and returns an owned descriptor or nil. The typed binding is behind a Core
+    // Services crate this build does not carry.
+    let list: Option<Retained<NSAppleEventDescriptor>> =
+        unsafe { msg_send![event, paramDescriptorForKeyword: DIRECT_OBJECT] };
+    let Some(list) = list else {
+        log::warn!("open-documents event without a direct object");
+        return Vec::new();
+    };
+    // Apple Event lists count from one.
+    (1..=list.numberOfItems())
+        .filter_map(|index| list.descriptorAtIndex(index)?.fileURLValue())
+        .collect()
+}
+
+/// Start receiving the folders and files the system asks this application to open. Call once,
+/// on the main thread, before the event loop starts.
+///
+/// The work waits for `NSApplicationWillFinishLaunchingNotification`, which is the last moment
+/// before AppKit dispatches the open-documents event an `open -a` launch carries, and the
+/// earliest the application object may be touched: winit asks that `NSApplication` not be
+/// created before its event loop is. At that point this becomes the application delegate, so
+/// `application:openURLs:` is called for every folder, now and later. If something else already
+/// holds the delegate, the `odoc` Apple Event is handled directly instead.
+pub fn watch_open_documents() {
+    let Some(_mtm) = MainThreadMarker::new() else {
+        log::warn!("open-documents observer not installed: not on the main thread");
+        return;
+    };
+    // Create the channel now, so a launch document has somewhere to go.
+    LazyLock::force(&OPEN_DOCUMENTS);
+
+    let handler = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            log::warn!("not installing the open-documents handler: not on the main thread");
+            return;
+        };
+        install_open_documents_handler(mtm);
+    });
+
+    let center = NSNotificationCenter::defaultCenter();
+    // SAFETY: the name is AppKit's own notification constant, the block only installs objects
+    // on the main thread, and a `None` queue asks for delivery on the posting thread, which is
+    // the main thread for this notification.
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSApplicationWillFinishLaunchingNotification),
+            None,
+            None,
+            &handler,
+        )
+    };
+    // One launch per process, but dropping the token would remove the observer before it has
+    // fired, so it is leaked rather than tracked.
+    std::mem::forget(token);
+    log::info!("watching for documents to open");
+}
+
+fn install_open_documents_handler(mtm: MainThreadMarker) {
+    let app = NSApplication::sharedApplication(mtm);
+    if app.delegate().is_none() {
+        let delegate = AppDelegate::new(mtm);
+        app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        // The application holds its delegate weakly, and the delegate is wanted for the life of
+        // the process, so it is leaked rather than tracked.
+        std::mem::forget(delegate);
+        log::info!("installed the application delegate for open-documents requests");
+        return;
+    }
+
+    log::warn!("another object is the application delegate; handling odoc events directly");
+    let handler = OpenDocumentsHandler::new(mtm);
+    let target: &AnyObject = &handler;
+    // SAFETY: `handler` implements `handleOpenDocuments:withReplyEvent:` with the two-descriptor
+    // signature an Apple Event handler takes, is kept alive for the rest of the process, and the
+    // class and ID are the four-character codes the method documents.
+    unsafe {
+        let _: () = msg_send![
+            &*NSAppleEventManager::sharedAppleEventManager(),
+            setEventHandler: target,
+            andSelector: sel!(handleOpenDocuments:withReplyEvent:),
+            forEventClass: CORE_EVENT_CLASS,
+            andEventID: OPEN_DOCUMENTS_EVENT,
+        ];
+    }
+    std::mem::forget(handler);
+}
+
+/// The documents that arrived before the application existed: the folder an `open -a` launch
+/// or a Dock folder click started this process with. Call once, from the application's `init`,
+/// before [`open_documents_subscription`] runs; it empties the channel of what is there and
+/// leaves it for the subscription.
+pub fn take_launch_documents() -> Vec<PathBuf> {
+    let mut guard = OPEN_DOCUMENTS.1.lock().unwrap();
+    let Some(rx) = guard.as_mut() else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    while let Ok(OpenDocuments(more)) = rx.try_recv() {
+        paths.extend(more);
+    }
+    paths
+}
+
+/// Deliver the system's open-documents requests as messages. Yields nothing if
+/// [`watch_open_documents`] did not run.
+pub fn open_documents_subscription() -> Subscription<OpenDocuments> {
+    Subscription::run(|| {
+        // The receiver is taken once; a restarted subscription gets an empty stream.
+        let rx = OPEN_DOCUMENTS.1.lock().unwrap().take();
         futures::stream::iter(rx).flatten()
     })
 }

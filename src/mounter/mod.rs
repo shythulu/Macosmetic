@@ -11,6 +11,8 @@ use crate::tab;
 
 #[cfg(feature = "gvfs")]
 mod gvfs;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 #[derive(Clone)]
 pub struct MounterAuth {
@@ -46,6 +48,8 @@ impl fmt::Debug for MounterAuth {
 pub enum MounterItem {
     #[cfg(feature = "gvfs")]
     Gvfs(gvfs::Item),
+    #[cfg(target_os = "macos")]
+    Macos(macos::Item),
     #[allow(dead_code)]
     None,
 }
@@ -55,6 +59,8 @@ impl MounterItem {
         match self {
             #[cfg(feature = "gvfs")]
             Self::Gvfs(item) => item.name(),
+            #[cfg(target_os = "macos")]
+            Self::Macos(item) => item.name(),
             Self::None => unreachable!(),
         }
     }
@@ -63,6 +69,8 @@ impl MounterItem {
         match self {
             #[cfg(feature = "gvfs")]
             Self::Gvfs(item) => item.uri(),
+            #[cfg(target_os = "macos")]
+            Self::Macos(item) => item.uri(),
             Self::None => unreachable!(),
         }
     }
@@ -71,6 +79,8 @@ impl MounterItem {
         match self {
             #[cfg(feature = "gvfs")]
             Self::Gvfs(item) => item.is_mounted(),
+            #[cfg(target_os = "macos")]
+            Self::Macos(item) => item.is_mounted(),
             Self::None => unreachable!(),
         }
     }
@@ -79,6 +89,8 @@ impl MounterItem {
         match self {
             #[cfg(feature = "gvfs")]
             Self::Gvfs(item) => item.icon(symbolic),
+            #[cfg(target_os = "macos")]
+            Self::Macos(item) => item.icon(symbolic),
             Self::None => unreachable!(),
         }
     }
@@ -87,6 +99,8 @@ impl MounterItem {
         match self {
             #[cfg(feature = "gvfs")]
             Self::Gvfs(item) => item.path(),
+            #[cfg(target_os = "macos")]
+            Self::Macos(item) => item.path(),
             Self::None => unreachable!(),
         }
     }
@@ -95,6 +109,8 @@ impl MounterItem {
         match self {
             #[cfg(feature = "gvfs")]
             Self::Gvfs(item) => item.is_remote(),
+            #[cfg(target_os = "macos")]
+            Self::Macos(item) => item.is_remote(),
             Self::None => unreachable!(),
         }
     }
@@ -133,6 +149,11 @@ pub fn mounters() -> Mounters {
     #[cfg(feature = "gvfs")]
     {
         mounters.insert(MounterKey("gvfs"), Box::new(gvfs::Gvfs::new()));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        mounters.insert(MounterKey("macos"), Box::new(macos::Macos::new()));
     }
 
     Mounters::new(mounters)

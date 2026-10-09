@@ -1,0 +1,10 @@
+--- a/iced/winit/src/clipboard.rs	2026-10-07 18:28:01
++++ b/iced/winit/src/clipboard.rs	2026-10-09 03:13:46
+@@ -92,7 +92,6 @@
+                 })
+                 .unwrap_or(State::Unavailable);
+ 
+-        #[cfg(wayland_platform)]
+         if let State::Connected { clipboard, .. } = &state {
+             clipboard.init_dnd(Box::new(sender));
+         }

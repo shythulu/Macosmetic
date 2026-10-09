@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use cosmic::{Element, theme};
 use cosmic::app::Core;
 use cosmic::iced::keyboard::Modifiers;
 use cosmic::widget::menu::action::MenuAction;
 use cosmic::widget::menu::key_bind::KeyBind;
 use cosmic::widget::menu::{self, ItemHeight, ItemWidth, MenuBar};
 use cosmic::widget::{self, responsive_menu_bar};
+use cosmic::{Element, theme};
 use i18n_embed::LanguageLoader;
 use mime_guess::Mime;
 use std::collections::HashMap;
@@ -14,8 +14,11 @@ use std::sync::LazyLock;
 
 use crate::app::{Action, Message};
 use crate::config::{Config, ContextActionPreset};
+use crate::copy_path::PathVariant;
 use crate::fl;
+use crate::folder_look::{self, FOLDER_COLOURS, FolderLook};
 use crate::key_bind::{menu_key_bind, menu_key_binds};
+use crate::quick_bar;
 use crate::tab::{
     self, HeadingOptions, ItemMetadata, Location, LocationMenuAction, SearchLocation, Tab,
 };
@@ -23,6 +26,24 @@ use crate::trash::{Trash, TrashExt};
 
 static MENU_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(|| cosmic::widget::Id::new("responsive-menu"));
+
+/// "Copy path as" submenu with one entry per [`PathVariant`].
+fn copy_path_as_folder() -> menu::Item<TabAction, String> {
+    let items = PathVariant::ALL
+        .into_iter()
+        .map(|variant| {
+            let label = match variant {
+                PathVariant::Posix => fl!("copy-path-posix"),
+                PathVariant::Tilde => fl!("copy-path-tilde"),
+                PathVariant::ShellQuoted => fl!("copy-path-shell-quoted"),
+                PathVariant::FileUrl => fl!("copy-path-file-url"),
+                PathVariant::Name => fl!("copy-path-name"),
+            };
+            menu::Item::Button(label, None, TabAction(Action::CopyPath(variant)))
+        })
+        .collect();
+    menu::Item::Folder(fl!("copy-path-as"), items)
+}
 
 const fn menu_button_optional(
     label: String,
@@ -48,12 +69,116 @@ impl MenuAction for TabAction {
     }
 }
 
+/// The "Folder colour" submenu: one entry per colour with a small coloured folder, then
+/// "None". The colour every selected folder shares is checked; a mixed selection checks
+/// nothing. Picking an entry colours every selected folder without opening the drawer.
+fn folder_colour_menu(selected: &[&std::path::Path]) -> menu::Item<TabAction, String> {
+    const ICON_SIZE: u16 = 14;
+    let shared = folder_look::shared_stored_look(selected.iter().copied());
+    let shared = shared.colour();
+    let mut children: Vec<menu::Item<TabAction, String>> = FOLDER_COLOURS
+        .iter()
+        .map(|colour| {
+            let look = FolderLook::Colour(colour.id.to_string());
+            let entry = menu::Entry::new(
+                folder_look::colour_label(colour.id),
+                TabAction(Action::SetFolderColour(Some(colour.id))),
+            )
+            .checked(shared == Some(Some(colour.id)));
+            // A raster-only theme has no coloured folder to show; the text still reads.
+            menu::Item::Entry(
+                match folder_look::folder_handle(&look, "folder", ICON_SIZE) {
+                    Some(handle) => entry.icon(handle),
+                    None => entry.reserve_icon(),
+                },
+            )
+        })
+        .collect();
+    children.push(menu::Item::Divider);
+    children.push(menu::Item::Entry(
+        menu::Entry::new(fl!("colour-none"), TabAction(Action::SetFolderColour(None)))
+            .reserve_icon()
+            .checked(shared == Some(None)),
+    ));
+    menu::Item::Folder(fl!("folder-colour-menu"), children)
+}
+
+/// Date Added comes from `NSURLAddedToDirectoryDateKey`. Other platforms record no such
+/// date, so the option is not offered there.
+const SORT_BY_DATE_ADDED: bool = cfg!(target_os = "macos");
+
+/// The Date Added entries of a view menu: none in the Trash, which has its own date, or
+/// where the platform records no such date.
+fn date_added_items<T>(
+    in_trash: bool,
+    sort_item: &impl Fn(String, tab::HeadingOptions, bool) -> T,
+) -> Vec<T> {
+    if in_trash || !SORT_BY_DATE_ADDED {
+        return Vec::new();
+    }
+    vec![
+        sort_item(
+            fl!("sort-date-added-newest-first"),
+            tab::HeadingOptions::DateAdded,
+            false,
+        ),
+        sort_item(
+            fl!("sort-date-added-oldest-first"),
+            tab::HeadingOptions::DateAdded,
+            true,
+        ),
+    ]
+}
+
+/// A filled circle in a tag colour, for the Tags submenu. Drawn as RGBA pixels: an SVG
+/// handle built from memory stops the context menu's submenu from opening on macOS.
+#[cfg(target_os = "macos")]
+fn tag_dot(colour: crate::tags::TagColour) -> Option<widget::icon::Handle> {
+    // Twice the 14 px menu icon size, so the dot is sharp on Retina displays.
+    const SIZE: u32 = 28;
+    const RADIUS: f32 = 10.0;
+    let (r, g, b) = colour.rgb()?;
+    let centre = SIZE as f32 / 2.0;
+    let mut pixels = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 + 0.5 - centre;
+            let dy = y as f32 + 0.5 - centre;
+            // One pixel of linear falloff at the edge for anti-aliasing.
+            let coverage = (RADIUS + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
+            pixels.extend_from_slice(&[r, g, b, (coverage * 255.0).round() as u8]);
+        }
+    }
+    Some(widget::icon::from_raster_pixels(SIZE, SIZE, pixels))
+}
+
+/// The "Tags" submenu: Finder's seven colour tags, then any other tag on the selection. A tag
+/// every selected item has is checked; clicking it removes it from all, clicking any other
+/// tag adds it to all.
+#[cfg(target_os = "macos")]
+fn tags_menu(sets: &[&[crate::tags::Tag]]) -> menu::Item<TabAction, String> {
+    let children = crate::tags_macos::menu_tags(sets)
+        .into_iter()
+        .enumerate()
+        .map(|(index, tag)| {
+            let entry = menu::Entry::new(tag.name, TabAction(Action::ToggleTag(index)))
+                .checked(tag.checked);
+            menu::Item::Entry(match tag_dot(tag.colour) {
+                Some(handle) => entry.icon(handle),
+                None => entry.reserve_icon(),
+            })
+        })
+        .collect();
+    menu::Item::Folder(fl!("tags-menu"), children)
+}
+
 pub fn context_menu<'a>(
     tab: &Tab,
     key_binds: &HashMap<KeyBind, Action>,
     modifiers: &Modifiers,
     clipboard_paste_available: bool,
     context_actions: &[ContextActionPreset],
+    context_quick_bar: bool,
 ) -> Vec<menu::Tree<tab::Message>> {
     let menu_item =
         |label: String, action: Action| menu::Item::Button(label, None, TabAction(action));
@@ -62,6 +187,14 @@ pub fn context_menu<'a>(
 
     // Allow paste when clipboard has data and we're in a location that supports it
     let can_paste = clipboard_paste_available && tab.location.supports_paste();
+
+    // The quick-action bar at the top of the menu. Empty while the setting is off, or in menus
+    // that have no cut/copy/paste entries to lift out of the list.
+    let mut quick_items: Vec<quick_bar::Item> = Vec::new();
+    // Whether the list below the bar should keep its own entry for this action.
+    let list_keeps = |quick_items: &[quick_bar::Item], action: quick_bar::QuickAction| {
+        !quick_bar::carries(quick_items, action)
+    };
 
     let (sort_name, sort_direction, _) = tab.sort_options();
     let sort_item = |label: String, variant| {
@@ -84,14 +217,24 @@ pub fn context_menu<'a>(
     let mut selected_desktop_entry = None;
     let mut selected_types: Vec<Mime> = vec![];
     let mut selected_mount_point = 0;
+    #[cfg(target_os = "macos")]
+    let mut selected_package = 0;
     let mut any_trash_item = false;
+    let mut selected_dir_paths: Vec<&std::path::Path> = Vec::new();
     if let Some(items) = tab.items_opt() {
         for item in items {
             if item.selected {
                 selected += 1;
+                #[cfg(target_os = "macos")]
+                {
+                    selected_package += usize::from(item.metadata.is_package());
+                }
                 if item.metadata.is_dir() {
                     selected_mount_point += i32::from(item.is_mount_point);
                     selected_dir += 1;
+                    if let Some(Location::Path(path)) = &item.location_opt {
+                        selected_dir_paths.push(path);
+                    }
                 }
                 match &item.location_opt {
                     Some(Location::Trash) | Some(Location::Search(SearchLocation::Trash, ..)) => {
@@ -164,14 +307,29 @@ pub fn context_menu<'a>(
                             .map(|(i, action)| menu_item(action.name, Action::ExecEntryAction(i))),
                     );
                 }
+                if context_quick_bar {
+                    quick_items = quick_bar::items(quick_bar::Context {
+                        selected,
+                        selected_mount_points: 0,
+                        can_paste,
+                    });
+                }
                 children.push(menu::Item::Divider);
-                children.push(menu_item(fl!("rename"), Action::Rename));
-                children.push(menu_item(fl!("cut"), Action::Cut));
+                if list_keeps(&quick_items, quick_bar::QuickAction::Rename) {
+                    children.push(menu_item(fl!("rename"), Action::Rename));
+                }
+                if list_keeps(&quick_items, quick_bar::QuickAction::Cut) {
+                    children.push(menu_item(fl!("cut"), Action::Cut));
+                }
                 if modifiers.shift() && !modifiers.control() {
-                    children.push(menu_item(fl!("copy-path"), Action::CopyPath));
-                } else {
+                    children.push(menu_item(
+                        fl!("copy-path"),
+                        Action::CopyPath(PathVariant::Posix),
+                    ));
+                } else if list_keeps(&quick_items, quick_bar::QuickAction::Copy) {
                     children.push(menu_item(fl!("copy"), Action::Copy));
                 }
+                children.push(copy_path_as_folder());
                 // Should this simply bypass trash and remove the shortcut?
                 children.push(menu_item(fl!("move-to-trash"), Action::Delete));
                 let action_items = context_action_items(selected, selected_dir);
@@ -187,6 +345,14 @@ pub fn context_menu<'a>(
                     children.push(menu_item(fl!("menu-open-with"), Action::OpenWith));
                     if selected_dir == 1 {
                         children.push(menu_item(fl!("open-in-terminal"), Action::OpenTerminal));
+                    }
+                    // A package opens as a file; this is the way inside it, as in Finder.
+                    #[cfg(target_os = "macos")]
+                    if selected_package == 1 {
+                        children.push(menu_item(
+                            fl!("show-package-contents"),
+                            Action::ShowPackageContents,
+                        ));
                     }
                 }
                 if tab.location.is_recents() || matches!(tab.location, Location::Search(..)) {
@@ -206,21 +372,50 @@ pub fn context_menu<'a>(
                 // Finder is the peer file manager on macOS; there is nothing to hand an
                 // item over to anywhere else.
                 #[cfg(target_os = "macos")]
-                children.push(menu_item(fl!("reveal-in-finder"), Action::RevealInFinder));
+                {
+                    children.push(menu_item(fl!("reveal-in-finder"), Action::RevealInFinder));
+                    children.push(menu_item(fl!("share"), Action::Share));
+                    children.push(menu_item(fl!("airdrop"), Action::AirDrop));
+                }
                 let action_items = context_action_items(selected, selected_dir);
                 if !action_items.is_empty() {
                     children.push(menu::Item::Divider);
                     children.extend(action_items);
                 }
+                if context_quick_bar {
+                    quick_items = quick_bar::items(quick_bar::Context {
+                        selected,
+                        selected_mount_points: usize::try_from(selected_mount_point)
+                            .unwrap_or_default(),
+                        can_paste,
+                    });
+                }
                 children.push(menu::Item::Divider);
                 if selected_mount_point == 0 {
-                    children.push(menu_item(fl!("rename"), Action::Rename));
-                    children.push(menu_item(fl!("cut"), Action::Cut));
+                    if list_keeps(&quick_items, quick_bar::QuickAction::Rename) {
+                        children.push(menu_item(fl!("rename"), Action::Rename));
+                    }
+                    if list_keeps(&quick_items, quick_bar::QuickAction::Cut) {
+                        children.push(menu_item(fl!("cut"), Action::Cut));
+                    }
                 }
                 if modifiers.shift() && !modifiers.control() {
-                    children.push(menu_item(fl!("copy-path"), Action::CopyPath));
-                } else {
+                    children.push(menu_item(
+                        fl!("copy-path"),
+                        Action::CopyPath(PathVariant::Posix),
+                    ));
+                } else if list_keeps(&quick_items, quick_bar::QuickAction::Copy) {
                     children.push(menu_item(fl!("copy"), Action::Copy));
+                }
+                children.push(copy_path_as_folder());
+                if selected_mount_point == 0 && !any_trash_item {
+                    children.push(menu_item(fl!("duplicate"), Action::Duplicate));
+                    if selected >= 2
+                        && matches!(tab.location, Location::Path(..) | Location::Desktop(..))
+                    {
+                        let label = fl!("new-folder-with-selection", items = selected);
+                        children.push(menu_item(label, Action::NewFolderWithSelection));
+                    }
                 }
                 if selected_mount_point == 0 {
                     children.push(menu_item(fl!("move-to"), Action::MoveTo));
@@ -238,12 +433,21 @@ pub fn context_menu<'a>(
                 children.push(menu::Item::Divider);
 
                 //TODO: Print?
+                #[cfg(target_os = "macos")]
+                if let Some(sets) = tab
+                    .items_opt()
+                    .and_then(|items| crate::tags_macos::selected_tag_sets(items))
+                {
+                    children.push(tags_menu(&sets));
+                }
                 children.push(menu_item(fl!("show-details"), Action::Preview));
                 if selected == selected_dir
                     && selected_mount_point == 0
                     && !any_trash_item
                     && matches!(tab.mode, tab::Mode::App)
                 {
+                    children.push(menu::Item::Divider);
+                    children.push(folder_colour_menu(&selected_dir_paths));
                     children.push(menu_item(fl!("customize-folder"), Action::CustomizeFolder));
                 }
                 if any_trash_item {
@@ -260,7 +464,9 @@ pub fn context_menu<'a>(
                         children.push(menu_item(fl!("add-to-sidebar"), Action::AddToSidebar));
                     }
                     children.push(menu::Item::Divider);
-                    if tab.location.is_recents() {
+                    // On macOS, Recents is Spotlight's history, which this app cannot
+                    // edit, so there is no "Remove from recents".
+                    if tab.location.is_recents() && cfg!(not(target_os = "macos")) {
                         children.push(menu_item(
                             fl!("remove-from-recents"),
                             Action::RemoveFromRecents,
@@ -293,10 +499,32 @@ pub fn context_menu<'a>(
                 if tab.mode.multiple() {
                     children.push(menu_item(fl!("select-all"), Action::SelectAll));
                 }
-                if can_paste {
-                    children.push(menu_item(fl!("paste"), Action::Paste));
-                } else {
-                    children.push(menu_item_disabled(fl!("paste"), Action::Paste));
+                if context_quick_bar {
+                    quick_items = quick_bar::items(quick_bar::Context {
+                        selected: 0,
+                        selected_mount_points: 0,
+                        can_paste,
+                    });
+                }
+                if list_keeps(&quick_items, quick_bar::QuickAction::Paste) {
+                    if can_paste {
+                        children.push(menu_item(fl!("paste"), Action::Paste));
+                    } else {
+                        children.push(menu_item_disabled(fl!("paste"), Action::Paste));
+                    }
+                }
+                // Select all and paste may both be gone; do not stack two dividers.
+                if matches!(children.last(), Some(menu::Item::Divider)) {
+                    children.pop();
+                }
+
+                // The folder being viewed can be customized from its own background.
+                if matches!(tab.mode, tab::Mode::App) && matches!(tab.location, Location::Path(_)) {
+                    children.push(menu::Item::Divider);
+                    children.push(menu_item(
+                        fl!("customize-this-folder"),
+                        Action::CustomizeFolder,
+                    ));
                 }
 
                 //TODO: only show if cosmic-settings is found?
@@ -316,11 +544,20 @@ pub fn context_menu<'a>(
                     ));
                 }
 
-                children.push(menu::Item::Divider);
+                if !children.is_empty() {
+                    children.push(menu::Item::Divider);
+                }
                 // TODO: Nested menu
                 children.push(sort_item(fl!("sort-by-name"), HeadingOptions::Name));
                 children.push(sort_item(fl!("sort-by-modified"), HeadingOptions::Modified));
                 children.push(sort_item(fl!("sort-by-size"), HeadingOptions::Size));
+                children.push(sort_item(fl!("sort-by-kind"), HeadingOptions::Kind));
+                if SORT_BY_DATE_ADDED {
+                    children.push(sort_item(
+                        fl!("sort-by-date-added"),
+                        HeadingOptions::DateAdded,
+                    ));
+                }
                 if matches!(tab.location, Location::Desktop(..)) {
                     children.push(menu::Item::Divider);
                     children.push(menu_item(
@@ -364,6 +601,13 @@ pub fn context_menu<'a>(
                 children.push(sort_item(fl!("sort-by-name"), HeadingOptions::Name));
                 children.push(sort_item(fl!("sort-by-modified"), HeadingOptions::Modified));
                 children.push(sort_item(fl!("sort-by-size"), HeadingOptions::Size));
+                children.push(sort_item(fl!("sort-by-kind"), HeadingOptions::Kind));
+                if SORT_BY_DATE_ADDED {
+                    children.push(sort_item(
+                        fl!("sort-by-date-added"),
+                        HeadingOptions::DateAdded,
+                    ));
+                }
             }
         }
         (_, Location::Network(..)) => {
@@ -408,11 +652,19 @@ pub fn context_menu<'a>(
         }
     }
 
-    let key_binds: HashMap<KeyBind, TabAction> = key_binds
+    let tab_key_binds: HashMap<KeyBind, TabAction> = key_binds
         .iter()
         .map(|(key_bind, action)| (menu_key_bind(key_bind), TabAction(*action)))
         .collect();
-    menu::items(&key_binds, children)
+    let mut trees = Vec::with_capacity(children.len() + 2);
+    if !quick_items.is_empty() {
+        trees.push(menu::Tree::from(quick_bar::view(&quick_items, key_binds)));
+        trees.push(menu::Tree::from(Element::<'static, tab::Message>::from(
+            widget::divider::horizontal::light(),
+        )));
+    }
+    trees.extend(menu::items(&tab_key_binds, children));
+    trees
 }
 
 pub fn dialog_menu(
@@ -515,8 +767,11 @@ pub fn dialog_menu(
                         tab::HeadingOptions::Size,
                         false,
                     ),
-                    //TODO: sort by type
-                ],
+                    sort_item(fl!("sort-kind"), tab::HeadingOptions::Kind, true),
+                ]
+                .into_iter()
+                .chain(date_added_items(in_trash, &sort_item))
+                .collect(),
             ),
         ),
         menu::Tree::with_children(
@@ -569,6 +824,8 @@ pub fn menu_bar<'a>(
     modifiers: &Modifiers,
     key_binds: &HashMap<KeyBind, Action>,
     clipboard_paste_available: bool,
+    next_undo: Option<crate::undo::Kind>,
+    next_redo: Option<crate::undo::Kind>,
 ) -> Element<'a, Message> {
     let key_binds = menu_key_binds(key_binds);
     let key_binds = &*key_binds;
@@ -665,8 +922,30 @@ pub fn menu_bar<'a>(
                 (
                     (fl!("edit")),
                     vec![
+                        match next_undo {
+                            Some(kind) => menu::Item::Button(
+                                fl!("undo-action", action = kind.name()),
+                                None,
+                                Action::Undo,
+                            ),
+                            None => menu::Item::ButtonDisabled(fl!("undo"), None, Action::Undo),
+                        },
+                        match next_redo {
+                            Some(kind) => menu::Item::Button(
+                                fl!("redo-action", action = kind.name()),
+                                None,
+                                Action::Redo,
+                            ),
+                            None => menu::Item::ButtonDisabled(fl!("redo"), None, Action::Redo),
+                        },
+                        menu::Item::Divider,
                         menu_button_optional(fl!("cut"), Action::Cut, selected > 0),
                         menu_button_optional(fl!("copy"), Action::Copy, selected > 0),
+                        menu_button_optional(
+                            fl!("duplicate"),
+                            Action::Duplicate,
+                            selected > 0 && !in_trash,
+                        ),
                         menu_button_optional(fl!("move-to"), Action::MoveTo, selected > 0),
                         menu_button_optional(fl!("copy-to"), Action::CopyTo, selected > 0),
                         menu_button_optional(fl!("paste"), Action::Paste, can_paste),
@@ -764,8 +1043,11 @@ pub fn menu_bar<'a>(
                             tab::HeadingOptions::Size,
                             false,
                         ),
-                        //TODO: sort by type
-                    ],
+                        sort_item(fl!("sort-kind"), tab::HeadingOptions::Kind, true),
+                    ]
+                    .into_iter()
+                    .chain(date_added_items(in_trash, &sort_item))
+                    .collect(),
                 ),
             ],
         )

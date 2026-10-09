@@ -30,8 +30,10 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
-use std::cell::Cell;
-use std::cmp::{Ordering, Reverse};
+use std::cell::{Cell, OnceCell};
+use std::cmp::Ordering;
+#[cfg(not(target_os = "macos"))]
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt::{self, Display};
@@ -487,8 +489,39 @@ const fn format_time<'a>(
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn hidden_attribute(_metadata: &Metadata) -> bool {
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn hidden_attribute(_path: &Path, _metadata: &Metadata, _remote: bool) -> bool {
+    false
+}
+
+/// Whether the entry has the BSD `UF_HIDDEN` flag. The OS sets it on the conventional
+/// system names at `/` and on `~/Library`, so no name list is needed.
+///
+/// The flag is read with `lstat`, because `/etc`, `/tmp` and `/var` are hidden symlinks
+/// to unhidden directories and `metadata` follows links. On a remote mount the followed
+/// `metadata` is used instead, to save a round trip per entry.
+#[cfg(target_os = "macos")]
+fn hidden_attribute(path: &Path, metadata: &Metadata, remote: bool) -> bool {
+    use crate::fs_flags_macos as flags;
+    if remote {
+        flags::is_hidden(metadata)
+    } else {
+        flags::lstat_flags(path).map_or_else(|_| flags::is_hidden(metadata), flags::flags_hidden)
+    }
+}
+
+/// Whether reading this entry's content would make the OS download it first.
+///
+/// True for an `SF_DATALESS` placeholder, such as an evicted iCloud Drive file or folder.
+/// Callers treat such an entry like one on a remote mount: name-based mime, no thumbnail,
+/// no checksum and no directory walk.
+#[cfg(target_os = "macos")]
+pub fn is_dataless(metadata: &Metadata) -> bool {
+    crate::fs_flags_macos::is_dataless(metadata)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn is_dataless(_metadata: &Metadata) -> bool {
     false
 }
 
@@ -503,7 +536,7 @@ pub fn is_always_hidden(name: &str) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn hidden_attribute(metadata: &Metadata) -> bool {
+fn hidden_attribute(_path: &Path, metadata: &Metadata, _remote: bool) -> bool {
     use std::os::windows::fs::MetadataExt;
     // https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants
     const FILE_ATTRIBUTE_HIDDEN: u32 = 2;
@@ -579,9 +612,19 @@ pub fn fs_kind(metadata: &Metadata) -> FsKind {
     DEVICES.get(&metadata.dev()).map_or(FsKind::Local, |x| *x)
 }
 
-#[cfg(not(target_os = "linux"))]
+/// SMB, NFS, AFP and WebDAV mounts lack `MNT_LOCAL`, so they are `Remote`.
+#[cfg(target_os = "macos")]
+pub fn fs_kind(metadata: &Metadata) -> FsKind {
+    if crate::fs_flags_macos::metadata_is_local(metadata) {
+        FsKind::Local
+    } else {
+        FsKind::Remote
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn fs_kind(_metadata: &Metadata) -> FsKind {
-    //TODO: support BSD, macOS, Windows?
+    //TODO: support BSD, Windows?
     FsKind::Local
 }
 
@@ -811,6 +854,10 @@ pub fn item_from_gvfs_info(path: PathBuf, file_info: gio::FileInfo, sizes: IconS
         dir_size,
         cut: false,
         checksums: ChecksumState::default(),
+        kind_opt: None,
+        date_added_opt: None,
+        get_info: OnceCell::new(),
+        tags: Vec::new(),
     }
 }
 
@@ -827,10 +874,21 @@ pub fn item_from_entry(
     metadata: fs::Metadata,
     sizes: IconSizes,
 ) -> Item {
+    let dataless = is_dataless(&metadata);
+    item_from_entry_with_dataless(path, name, metadata, sizes, dataless)
+}
+
+/// [`item_from_entry`] with the dataless flag passed in, so tests can set it on an ordinary
+/// file. Dataless placeholders cannot be created without a file provider.
+fn item_from_entry_with_dataless(
+    path: PathBuf,
+    name: String,
+    metadata: fs::Metadata,
+    sizes: IconSizes,
+    dataless: bool,
+) -> Item {
     let mut is_desktop = false;
     let mut is_gvfs = false;
-
-    let hidden = name.starts_with('.') || hidden_attribute(&metadata);
 
     let remote = match fs_kind(&metadata) {
         FsKind::Local => false,
@@ -850,47 +908,65 @@ pub fn item_from_entry(
         }
     };
 
-    let (mime, icon_handle_grid, icon_handle_list, icon_handle_list_condensed) =
-        if metadata.is_dir() {
-            // A `.directory` file is one more read per subfolder; skip it on remote mounts.
-            let look = folder_look::look_for(&path, !remote);
+    let hidden = name.starts_with('.') || hidden_attribute(&path, &metadata, remote);
+    // A dataless entry downloads on first read, so it gets the remote treatment below.
+    let skip_content = remote || dataless;
+    let is_package = metadata.is_dir() && path_is_package(&path);
+
+    let (mime, icon_handle_grid, icon_handle_list, icon_handle_list_condensed) = if is_package {
+        // A package shows as the file it stands for. Its type comes from the extension
+        // alone: asking the MIME database about the path would see a directory again.
+        let mime = mime_guess::from_path(&path).first_or_octet_stream();
+        (
+            mime.clone(),
+            mime_icon(mime.clone(), sizes.grid()),
+            mime_icon(mime.clone(), sizes.list()),
+            mime_icon(mime, sizes.list_condensed()),
+        )
+    } else if metadata.is_dir() {
+        // A `.directory` file is one more read per subfolder; skip it on remote mounts.
+        let look = folder_look::look_for(&path, !skip_content);
+        (
+            //TODO: make this a static
+            "inode/directory".parse().unwrap(),
+            folder_icon_with_look(&path, look.as_ref(), sizes.grid()),
+            folder_icon_with_look(&path, look.as_ref(), sizes.list()),
+            folder_icon_with_look(&path, look.as_ref(), sizes.list_condensed()),
+        )
+    } else {
+        let mime = mime_for_path(&path, Some(&metadata), skip_content);
+        //TODO: clean this up, implement for trash
+        let icon_name_opt = if mime == "application/x-desktop" {
+            is_desktop = true;
+            get_desktop_file_icon(&path)
+        } else {
+            None
+        };
+        if let Some(icon_name) = icon_name_opt {
             (
-                //TODO: make this a static
-                "inode/directory".parse().unwrap(),
-                folder_icon_with_look(&path, look.as_ref(), sizes.grid()),
-                folder_icon_with_look(&path, look.as_ref(), sizes.list()),
-                folder_icon_with_look(&path, look.as_ref(), sizes.list_condensed()),
+                mime,
+                desktop_icon_handle(&icon_name, sizes.grid()),
+                desktop_icon_handle(&icon_name, sizes.list()),
+                desktop_icon_handle(&icon_name, sizes.list_condensed()),
             )
         } else {
-            let mime = mime_for_path(&path, Some(&metadata), remote);
-            //TODO: clean this up, implement for trash
-            let icon_name_opt = if mime == "application/x-desktop" {
-                is_desktop = true;
-                get_desktop_file_icon(&path)
-            } else {
-                None
-            };
-            if let Some(icon_name) = icon_name_opt {
-                (
-                    mime,
-                    desktop_icon_handle(&icon_name, sizes.grid()),
-                    desktop_icon_handle(&icon_name, sizes.list()),
-                    desktop_icon_handle(&icon_name, sizes.list_condensed()),
-                )
-            } else {
-                (
-                    mime.clone(),
-                    mime_icon(mime.clone(), sizes.grid()),
-                    mime_icon(mime.clone(), sizes.list()),
-                    mime_icon(mime, sizes.list_condensed()),
-                )
-            }
-        };
+            (
+                mime.clone(),
+                mime_icon(mime.clone(), sizes.grid()),
+                mime_icon(mime.clone(), sizes.list()),
+                mime_icon(mime, sizes.list_condensed()),
+            )
+        }
+    };
 
     let mut children_opt = None;
     let mut dir_size = DirSize::NotDirectory;
-    if metadata.is_dir() && !remote {
+    if metadata.is_dir() && !skip_content {
+        // A package still has a total size, shown in the details pane, but its item count
+        // would expose it as a folder.
         dir_size = DirSize::Calculating(Controller::default());
+    }
+    if metadata.is_dir() && !skip_content && !is_package {
         //TODO: calculate children in the background (and make it cancellable?)
         match fs::read_dir(&path) {
             Ok(entries) => {
@@ -903,6 +979,17 @@ pub fn item_from_entry(
     }
 
     let display_name = display_name_for_file(&path, &name, is_gvfs, is_desktop);
+    // One Foundation call per item; remote mounts skip it, as they skip the reads above.
+    let (kind_opt, date_added_opt) = if remote {
+        (None, None)
+    } else {
+        local_kind_and_date_added(&path)
+    };
+    let tags = if remote {
+        Vec::new()
+    } else {
+        crate::tags::read(&path, &metadata)
+    };
 
     Item {
         name,
@@ -911,6 +998,7 @@ pub fn item_from_entry(
         metadata: ItemMetadata::Path {
             metadata,
             children_opt,
+            is_package,
         },
         hidden,
         location_opt: Some(Location::Path(path)),
@@ -919,7 +1007,7 @@ pub fn item_from_entry(
         icon_handle_grid,
         icon_handle_list,
         icon_handle_list_condensed,
-        thumbnail_opt: remote.then_some(ItemThumbnail::NotImage),
+        thumbnail_opt: skip_content.then_some(ItemThumbnail::NotImage),
         thumbnail_scale_opt: None,
         button_id: widget::Id::unique(),
         pos_opt: Cell::new(None),
@@ -930,7 +1018,29 @@ pub fn item_from_entry(
         dir_size,
         cut: false,
         checksums: ChecksumState::default(),
+        kind_opt,
+        date_added_opt,
+        get_info: OnceCell::new(),
+        tags,
     }
+}
+
+/// The Kind and Date Added of a local file, where the platform records them.
+#[cfg(target_os = "macos")]
+fn local_kind_and_date_added(path: &Path) -> (Option<ItemKind>, Option<SystemTime>) {
+    let (kind, date_added) = crate::url_values_macos::kind_and_date_added(path);
+    let kind = kind.map(|kind| ItemKind {
+        type_id: kind.type_id,
+        description: kind.description,
+    });
+    (kind, date_added)
+}
+
+/// Elsewhere Kind falls back to the MIME type and Date Added to the creation time, both of
+/// which the item already carries.
+#[cfg(not(target_os = "macos"))]
+fn local_kind_and_date_added(_path: &Path) -> (Option<ItemKind>, Option<SystemTime>) {
+    (None, None)
 }
 
 /// An entry the OS listed but refused to stat.
@@ -974,6 +1084,10 @@ pub fn item_from_denied_entry(path: PathBuf, name: String, is_dir: bool, sizes: 
         dir_size: DirSize::NotDirectory,
         cut: false,
         checksums: ChecksumState::default(),
+        kind_opt: None,
+        date_added_opt: None,
+        get_info: OnceCell::new(),
+        tags: Vec::new(),
     }
 }
 
@@ -1041,6 +1155,10 @@ pub fn item_from_trash_entry(
         dir_size: DirSize::NotDirectory,
         cut: false,
         checksums: ChecksumState::default(),
+        kind_opt: None,
+        date_added_opt: None,
+        get_info: OnceCell::new(),
+        tags: Vec::new(),
     }
 }
 
@@ -1307,6 +1425,26 @@ pub fn scan_search<F: Fn(SearchItem) -> bool + Sync>(
                     })
                 });
         }
+        #[cfg(target_os = "macos")]
+        SearchLocation::Recents => {
+            for (path, _) in crate::spotlight_macos::recent_files() {
+                let Some(file_name) = path.file_name() else {
+                    continue;
+                };
+                let file_name = file_name.to_string_lossy().to_string();
+                if !regex.is_match(&file_name) {
+                    continue;
+                }
+                // Spotlight's index can lag a delete, so a missing file is skipped.
+                let Ok(metadata) = path.metadata() else {
+                    continue;
+                };
+                if !callback(SearchItem::Path(path, file_name, metadata)) {
+                    break;
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
         SearchLocation::Recents => {
             let recent_files = match recently_used_xbel::parse_file() {
                 Ok(recent_files) => recent_files,
@@ -1354,6 +1492,7 @@ pub fn scan_search<F: Fn(SearchItem) -> bool + Sync>(
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn uri_to_path(uri: String) -> Option<PathBuf> {
     uri.parse::<url::Url>().ok().and_then(|url| {
         //TODO support for external drive or cloud?
@@ -1365,6 +1504,14 @@ fn uri_to_path(uri: String) -> Option<PathBuf> {
     })
 }
 
+/// On macOS, Recents comes from Spotlight, and this app cannot clear Spotlight's history.
+/// So the "Clear recents history" entry, which this gates, never shows.
+#[cfg(target_os = "macos")]
+pub fn has_recents() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn has_recents() -> bool {
     match recently_used_xbel::parse_file() {
         Ok(recent_files) => !recent_files.bookmarks.is_empty(),
@@ -1372,6 +1519,22 @@ pub fn has_recents() -> bool {
     }
 }
 
+/// Recents on macOS: files any app opened in the last 30 days, from Spotlight, like
+/// Finder's Recents. See `spotlight_macos`.
+#[cfg(target_os = "macos")]
+pub fn scan_recents(sizes: IconSizes) -> Vec<Item> {
+    crate::spotlight_macos::recent_files()
+        .into_iter()
+        .filter_map(|(path, _)| {
+            let name = path.file_name()?.to_string_lossy().to_string();
+            // Spotlight's index can lag a delete, so a missing file is skipped.
+            let metadata = path.metadata().ok()?;
+            Some(item_from_entry(path, name, metadata, sizes))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn scan_recents(sizes: IconSizes) -> Vec<Item> {
     let recent_files = match recently_used_xbel::parse_file() {
         Ok(recent_files) => recent_files,
@@ -1522,6 +1685,10 @@ pub fn scan_desktop(
             dir_size: DirSize::NotDirectory,
             cut: false,
             checksums: ChecksumState::default(),
+            kind_opt: None,
+            date_added_opt: None,
+            get_info: OnceCell::new(),
+            tags: Vec::new(),
         });
     }
 
@@ -1916,6 +2083,8 @@ pub enum Message {
     /// Access can be granted.
     OpenPrivacySettings,
     Reload,
+    /// Browse inside the selected package instead of opening it.
+    ShowPackageContents,
     RightClick(Option<Point>, Option<usize>),
     MiddleClick(usize),
     Resize(Rectangle),
@@ -2005,6 +2174,18 @@ pub enum ChecksumState {
 /// PATH, so nothing may be looked up by name (porting notes 5.4).
 #[cfg(target_os = "macos")]
 pub const MACOS_OPEN: &str = "/usr/bin/open";
+
+/// Whether the directory at `path` is a package that opens as a single file. Only macOS has
+/// packages; see [`crate::url_values_macos::is_package`].
+pub fn path_is_package(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    return crate::url_values_macos::is_package(path);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
 
 /// The deep link to the pane that grants Full Disk Access. There is no API to prompt for
 /// it, so pointing at System Settings is all an app can do; porting notes 4.2.
@@ -2115,6 +2296,10 @@ pub enum ItemMetadata {
     Path {
         metadata: Metadata,
         children_opt: Option<usize>,
+        /// A directory that macOS shows and opens as a single file, such as an `.app` or an
+        /// `.rtfd`. It reports as a file from [`ItemMetadata::is_dir`]; "Show Package
+        /// Contents" is the way inside. Always false on other platforms.
+        is_package: bool,
     },
     /// An entry the OS refused to stat; see [`ItemAccess::Denied`]. It carries no metadata
     /// by definition, so the size and modified columns stay blank.
@@ -2143,7 +2328,11 @@ pub enum ItemMetadata {
 impl ItemMetadata {
     pub fn is_dir(&self) -> bool {
         match self {
-            Self::Path { metadata, .. } => metadata.is_dir(),
+            Self::Path {
+                metadata,
+                is_package,
+                ..
+            } => metadata.is_dir() && !is_package,
             Self::Denied { is_dir } => *is_dir,
             Self::Trash { metadata, .. } => match metadata.size {
                 trash::TrashItemSize::Entries(_) => true,
@@ -2154,6 +2343,17 @@ impl ItemMetadata {
             #[cfg(feature = "gvfs")]
             Self::GvfsPath { is_dir, .. } => *is_dir,
         }
+    }
+
+    /// Whether this is a package: a directory shown and opened as a single file.
+    pub fn is_package(&self) -> bool {
+        matches!(
+            self,
+            Self::Path {
+                is_package: true,
+                ..
+            }
+        )
     }
 
     pub fn modified(&self) -> Option<SystemTime> {
@@ -2229,6 +2429,13 @@ impl ItemThumbnail {
         jobs: usize,
         max_size_mb: u64,
     ) -> Self {
+        // Every path below reads the file, even a cache hit, which checks the source's
+        // dimensions. A dataless file would download, so it keeps its icon.
+        if let ItemMetadata::Path { metadata, .. } = &metadata
+            && is_dataless(metadata)
+        {
+            return Self::NotImage;
+        }
         let thumbnail_cacher =
             ThumbnailCacher::new(path, ThumbnailSize::from_pixel_size(thumbnail_size));
         match thumbnail_cacher.as_ref() {
@@ -2238,7 +2445,7 @@ impl ItemThumbnail {
                     // Quick Look, and stays a Quick Look preview: the source path is not an
                     // image, so the gallery must not try to load it at full resolution.
                     #[cfg(all(target_os = "macos", feature = "quicklook"))]
-                    if crate::quicklook_macos::owns_preview(&mime) {
+                    if metadata.is_package() || crate::quicklook_macos::owns_preview(&mime) {
                         return Self::QuickLook(widget::image::Handle::from_path(thumbnail_path));
                     }
 
@@ -2270,6 +2477,33 @@ impl ItemThumbnail {
                     err
                 );
             }
+        }
+
+        // A package is a directory, so none of the readers below can open it. Quick Look
+        // renders it the way Finder does: an app's own icon, a document's first page.
+        if metadata.is_package() {
+            #[cfg(all(target_os = "macos", feature = "quicklook"))]
+            {
+                let thumbnail_dir = thumbnail_cacher
+                    .as_ref()
+                    .ok()
+                    .map(ThumbnailCacher::thumbnail_dir);
+                if let Some((item_thumbnail, temp_file)) = Self::generate_thumbnail_quicklook(
+                    path,
+                    &mime,
+                    true,
+                    thumbnail_size,
+                    thumbnail_dir,
+                ) {
+                    if let Ok(cache) = thumbnail_cacher
+                        && let Err(err) = cache.update_with_temp_file(temp_file)
+                    {
+                        log::warn!("failed to update cache for {}: {}", path.display(), err);
+                    }
+                    return item_thumbnail;
+                }
+            }
+            return Self::NotImage;
         }
 
         let size = metadata.file_size().unwrap_or_default();
@@ -2395,7 +2629,7 @@ impl ItemThumbnail {
         // office documents, video and the image formats the `image` crate cannot decode.
         #[cfg(all(target_os = "macos", feature = "quicklook"))]
         if let Some((item_thumbnail, temp_file)) =
-            Self::generate_thumbnail_quicklook(path, &mime, thumbnail_size, thumbnail_dir)
+            Self::generate_thumbnail_quicklook(path, &mime, false, thumbnail_size, thumbnail_dir)
         {
             if let Ok(cache) = thumbnail_cacher
                 && let Err(err) = cache.update_with_temp_file(temp_file)
@@ -2491,14 +2725,18 @@ impl ItemThumbnail {
     /// the thumbnail cache so the caller can move it into place without crossing a filesystem.
     /// Quick Look overwrites the file the temp handle already created, and a failed request
     /// leaves it empty, which is why the decode below is what decides success.
+    ///
+    /// A package (`is_package`) always goes to Quick Look and accepts its icon: for an app the
+    /// icon is the only picture there is, and it is what Finder shows.
     #[cfg(all(target_os = "macos", feature = "quicklook"))]
     fn generate_thumbnail_quicklook(
         path: &Path,
         mime: &mime::Mime,
+        is_package: bool,
         thumbnail_size: u32,
         thumbnail_dir: Option<&Path>,
     ) -> Option<(Self, NamedTempFile)> {
-        if !crate::quicklook_macos::owns_preview(mime) {
+        if !is_package && !crate::quicklook_macos::owns_preview(mime) {
             return None;
         }
 
@@ -2520,13 +2758,34 @@ impl ItemThumbnail {
             }
         };
 
-        if let Err(err) = crate::quicklook_macos::save_preview_png(
-            path,
-            file.path(),
-            mime,
-            f64::from(thumbnail_size),
-            1.0,
-        ) {
+        let result = if is_package {
+            // Document packages (`.pages`, `.rtfd`) get a real preview from Quick Look. Apps
+            // get nothing from it, so they fall back to the icon Finder shows.
+            crate::quicklook_macos::save_thumbnail_png(
+                path,
+                file.path(),
+                f64::from(thumbnail_size),
+                1.0,
+                crate::quicklook_macos::Representation::IconOrThumbnail,
+            )
+            .or_else(|_| {
+                crate::quicklook_macos::save_icon_png(
+                    path,
+                    file.path(),
+                    f64::from(thumbnail_size),
+                    1.0,
+                )
+            })
+        } else {
+            crate::quicklook_macos::save_preview_png(
+                path,
+                file.path(),
+                mime,
+                f64::from(thumbnail_size),
+                1.0,
+            )
+        };
+        if let Err(err) = result {
             log::debug!("quick look declined {}: {}", path.display(), err);
             return None;
         }
@@ -2676,9 +2935,103 @@ pub struct Item {
     pub overlaps_drag_rect: bool,
     pub dir_size: DirSize,
     pub checksums: ChecksumState,
+    /// The platform's Kind for a local item: on macOS its UTType. `None` elsewhere, on
+    /// remote mounts, and where it could not be read; [`Item::kind_sort_key`] then falls
+    /// back to the MIME type.
+    pub kind_opt: Option<ItemKind>,
+    /// When the item was put in its folder (macOS `NSURLAddedToDirectoryDateKey`).
+    pub date_added_opt: Option<SystemTime>,
+    /// Get Info fields, read the first time the details pane shows this item.
+    pub get_info: OnceCell<GetInfo>,
+    /// Finder tags, read at scan time on local macOS volumes. Empty elsewhere.
+    pub tags: Vec<crate::tags::Tag>,
+}
+
+/// What an item is, as the platform names it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemKind {
+    /// The identifier to sort on, for example `com.adobe.pdf`.
+    pub type_id: String,
+    /// The localised name to show, for example "PDF document".
+    pub description: String,
+}
+
+/// The Get Info fields of the details pane that are not part of the scanned metadata.
+///
+/// They cost a filesystem or Foundation call each, so they are read for the one item the details
+/// pane shows rather than for every item in a directory.
+#[derive(Clone, Debug, Default)]
+pub struct GetInfo {
+    /// Finder's localized Kind, such as "PDF document". macOS only.
+    pub kind: Option<String>,
+    /// The folder the item is in, with the home folder written as `~`.
+    pub location: Option<String>,
+    /// When the item was put in its folder. macOS only.
+    pub added: Option<SystemTime>,
+    /// An application bundle's version. macOS only.
+    pub version: Option<String>,
+}
+
+impl GetInfo {
+    pub fn read(path: &Path) -> Self {
+        let location = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(|parent| abbreviate_home(parent, &crate::home_dir()));
+        #[cfg(target_os = "macos")]
+        {
+            use crate::url_values_macos;
+            let (kind, added) = url_values_macos::kind_and_date_added(path);
+            Self {
+                kind: kind.map(|kind| kind.description),
+                location,
+                added,
+                version: url_values_macos::app_version(path),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self {
+                location,
+                ..Self::default()
+            }
+        }
+    }
+}
+
+/// `path` with a leading `home` written as `~`, the way Finder and shells show it.
+pub fn abbreviate_home(path: &Path, home: &Path) -> String {
+    // A home of `/` is the fallback for a missing home folder, not a real one.
+    if home.parent().is_some()
+        && let Ok(rest) = path.strip_prefix(home)
+    {
+        return if rest.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", rest.display())
+        };
+    }
+    path.display().to_string()
 }
 
 impl Item {
+    /// What Sort by Kind compares: the UTType identifier where there is one, else the MIME
+    /// type.
+    pub fn kind_sort_key(&self) -> &str {
+        self.kind_opt
+            .as_ref()
+            .map_or_else(|| self.mime.essence_str(), |kind| kind.type_id.as_str())
+    }
+
+    /// What Sort by Date Added compares: the recorded date where there is one, else the
+    /// creation time.
+    pub fn date_added(&self) -> Option<SystemTime> {
+        self.date_added_opt.or_else(|| match &self.metadata {
+            ItemMetadata::Path { metadata, .. } => metadata.created().ok(),
+            _ => None,
+        })
+    }
+
     fn display_name(name: &str) -> String {
         // In order to wrap at periods and underscores, add a zero width space after each one
         name.replace('.', ".\u{200B}").replace('_', "_\u{200B}")
@@ -2705,6 +3058,72 @@ impl Item {
             .ellipsize(text::Ellipsize::Middle(text::EllipsizeHeightLimit::Lines(
                 1,
             )))
+    }
+
+    /// Finder-style tag dots: up to three overlapping circles, one per coloured tag.
+    /// Returns the dots and their width. `None` when no tag has a colour, so untagged names
+    /// render exactly as before.
+    fn tag_dots<'a>(&self) -> Option<(Element<'a, Message>, f32)> {
+        const DOT: f32 = 10.0;
+        const STEP: f32 = 6.0;
+        let colours: Vec<_> = crate::tags::dot_colours(&self.tags, 3)
+            .filter_map(crate::tags::TagColour::rgb)
+            .collect();
+        if colours.is_empty() {
+            return None;
+        }
+        let width = DOT + STEP * (colours.len() - 1) as f32;
+        let dots = colours.into_iter().enumerate().map(|(i, (r, g, b))| {
+            let dot = widget::container(space::horizontal().width(Length::Fixed(DOT)))
+                .width(Length::Fixed(DOT))
+                .height(Length::Fixed(DOT))
+                .style(move |theme: &cosmic::Theme| widget::container::Style {
+                    background: Some(Color::from_rgb8(r, g, b).into()),
+                    // A ring in the background colour separates overlapping dots.
+                    border: Border {
+                        color: theme.cosmic().bg_color().into(),
+                        width: 1.0,
+                        radius: (DOT / 2.0).into(),
+                    },
+                    ..Default::default()
+                });
+            // A stack takes its size from the first layer, so every layer spans the full width.
+            Element::from(
+                widget::container(dot)
+                    .padding(padding::left(STEP * i as f32))
+                    .width(Length::Fixed(width)),
+            )
+        });
+        Some((
+            widget::container(stack(dots))
+                .width(Length::Fixed(width))
+                .into(),
+            width,
+        ))
+    }
+
+    /// `name` followed by the tag dots, if any. With dots, the name is limited to `max_width`
+    /// minus the dots, so it wraps or ellipsizes instead of pushing them out of view. `None`
+    /// lets the name fill the space the dots leave.
+    fn with_tag_dots<'a>(
+        &self,
+        name: widget::Text<'a, cosmic::Theme, cosmic::Renderer>,
+        max_width: Option<f32>,
+    ) -> Element<'a, Message> {
+        match self.tag_dots() {
+            Some((dots, dots_width)) => {
+                const GAP: f32 = 4.0;
+                let width = match max_width {
+                    Some(max) => Length::Fixed((max - dots_width - GAP).max(0.0)),
+                    None => Length::Fill,
+                };
+                widget::row::with_children([name.width(width).into(), dots])
+                    .align_y(Alignment::Center)
+                    .spacing(GAP)
+                    .into()
+            }
+            None => name.into(),
+        }
     }
 
     pub fn path_opt(&self) -> Option<&PathBuf> {
@@ -2860,6 +3279,12 @@ impl Item {
 
         let mut details = widget::column::with_capacity(8).spacing(space_xxxs);
         details = details.push(widget::selectable_text::heading(self.name.clone()));
+        let get_info = self
+            .path_opt()
+            .map(|path| self.get_info.get_or_init(|| GetInfo::read(path)));
+        if let Some(kind) = get_info.and_then(|info| info.kind.as_deref()) {
+            details = details.push(widget::text::body(fl!("item-kind", kind = kind)));
+        }
         details = details.push(widget::text::body(fl!(
             "type",
             mime = self.mime.to_string()
@@ -2912,6 +3337,21 @@ impl Item {
                 )));
             }
 
+            if let Some(info) = get_info {
+                if let Some(location) = &info.location {
+                    details = details.push(widget::selectable_text::body(fl!(
+                        "item-where",
+                        path = location.as_str()
+                    )));
+                }
+                if let Some(version) = &info.version {
+                    details = details.push(widget::selectable_text::body(fl!(
+                        "item-version",
+                        version = version.as_str()
+                    )));
+                }
+            }
+
             let date_time_formatter = date_time_formatter(military_time);
             let time_formatter = time_formatter(military_time);
 
@@ -2933,6 +3373,13 @@ impl Item {
                 details = details.push(widget::selectable_text::body(fl!(
                     "item-accessed",
                     accessed = format_time(time, &date_time_formatter, &time_formatter).to_string()
+                )));
+            }
+
+            if let Some(time) = get_info.and_then(|info| info.added) {
+                details = details.push(widget::selectable_text::body(fl!(
+                    "item-added",
+                    added = format_time(time, &date_time_formatter, &time_formatter).to_string()
                 )));
             }
 
@@ -3004,11 +3451,18 @@ impl Item {
             }
         }
 
+        // Reading the image header of a dataless file would download it.
+        let dataless = self.file_metadata().is_some_and(|m| is_dataless(&m));
         if let Some(path) = self.path_opt()
+            && !dataless
             && let Ok(img) = image::image_dimensions(path)
         {
             let (width, height) = img;
             details = details.push(widget::text::body(format!("{width}x{height}")));
+        }
+        if !self.tags.is_empty() {
+            let names: Vec<&str> = self.tags.iter().map(|tag| tag.name.as_str()).collect();
+            details = details.push(widget::text::body(fl!("tags", tags = names.join(", "))));
         }
         column = column.push(details);
 
@@ -3017,6 +3471,10 @@ impl Item {
             && let Some(path) = self.path_opt()
         {
             let control: Element<'_, Message> = match &self.checksums {
+                // Hashing a dataless file would download all of it.
+                ChecksumState::NotCalculated if dataless => {
+                    widget::text::body(fl!("not-downloaded")).into()
+                }
                 ChecksumState::NotCalculated => widget::button::standard(fl!("calculate"))
                     .on_press(Message::CalculateChecksums(path.clone()))
                     .into(),
@@ -3092,6 +3550,7 @@ impl Item {
         if let ItemMetadata::Path {
             metadata,
             children_opt,
+            ..
         } = &self.metadata
         {
             if metadata.is_dir() {
@@ -3127,12 +3586,55 @@ pub enum View {
     Grid,
     List,
 }
+/// Folders before files when `folders_first` is on; `None` when that does not decide it.
+fn folders_first_order(a: &Item, b: &Item, folders_first: bool) -> Option<Ordering> {
+    if !folders_first {
+        return None;
+    }
+    match (a.metadata.is_dir(), b.metadata.is_dir()) {
+        (true, false) => Some(Ordering::Less),
+        (false, true) => Some(Ordering::Greater),
+        _ => None,
+    }
+}
+
+/// Sort by Kind: the type identifier in the chosen direction, then the name A to Z, so
+/// each group stays in name order when the groups are reversed.
+fn compare_by_kind(a: &Item, b: &Item, folders_first: bool, ascending: bool) -> Ordering {
+    folders_first_order(a, b, folders_first).unwrap_or_else(|| {
+        let by_kind = a.kind_sort_key().cmp(b.kind_sort_key());
+        let by_kind = if ascending {
+            by_kind
+        } else {
+            by_kind.reverse()
+        };
+        by_kind.then_with(|| LANGUAGE_SORTER.compare(&a.display_name, &b.display_name))
+    })
+}
+
+/// Sort by Date Added. Items with no date go last in either direction.
+fn compare_by_date_added(a: &Item, b: &Item, folders_first: bool, ascending: bool) -> Ordering {
+    folders_first_order(a, b, folders_first).unwrap_or_else(|| {
+        match (a.date_added(), b.date_added()) {
+            (Some(a), Some(b)) if ascending => a.cmp(&b),
+            (Some(a), Some(b)) => b.cmp(&a),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+        .then_with(|| LANGUAGE_SORTER.compare(&a.display_name, &b.display_name))
+    })
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, PartialOrd, Ord, Eq, Deserialize, Serialize)]
 pub enum HeadingOptions {
     Name = 0,
     Modified,
     Size,
     TrashedOn,
+    // New variants go last. The saved state names variants, so old values keep loading.
+    Kind,
+    DateAdded,
 }
 
 impl fmt::Display for HeadingOptions {
@@ -3142,6 +3644,8 @@ impl fmt::Display for HeadingOptions {
             Self::Modified => write!(f, "{}", fl!("modified")),
             Self::Size => write!(f, "{}", fl!("size")),
             Self::TrashedOn => write!(f, "{}", fl!("trashed-on")),
+            Self::Kind => write!(f, "{}", fl!("kind")),
+            Self::DateAdded => write!(f, "{}", fl!("date-added")),
         }
     }
 }
@@ -3153,6 +3657,8 @@ impl HeadingOptions {
             Self::Modified.to_string(),
             Self::Size.to_string(),
             Self::TrashedOn.to_string(),
+            Self::Kind.to_string(),
+            Self::DateAdded.to_string(),
         ]
     }
 }
@@ -3339,6 +3845,30 @@ pub fn is_protected_tree(path: &Path, home: &Path) -> bool {
 }
 
 async fn calculate_dir_size(path: &Path, controller: Controller) -> Result<u64, OperationError> {
+    calculate_dir_size_skipping(path, controller, |entry| {
+        entry.file_type().is_dir() && dataless_path(entry.path())
+    })
+    .await
+}
+
+#[cfg(target_os = "macos")]
+fn dataless_path(path: &Path) -> bool {
+    crate::fs_flags_macos::path_is_dataless(path)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn dataless_path(_path: &Path) -> bool {
+    false
+}
+
+/// Sums file sizes from metadata alone, so a dataless file counts its `st_size` without
+/// being opened. A directory `skip_dir` accepts is not descended into: listing a dataless
+/// directory makes the OS fetch it, so its contents are left out of the total.
+async fn calculate_dir_size_skipping(
+    path: &Path,
+    controller: Controller,
+    skip_dir: impl Fn(&walkdir::DirEntry) -> bool,
+) -> Result<u64, OperationError> {
     let mut total = 0;
     // A protected tree contributes nothing rather than being descended into: the root
     // itself is filtered out when it is one, and WalkDir does not walk past a filtered
@@ -3346,7 +3876,7 @@ async fn calculate_dir_size(path: &Path, controller: Controller) -> Result<u64, 
     let home = crate::home_dir();
     for entry_res in WalkDir::new(path)
         .into_iter()
-        .filter_entry(|entry| !is_protected_tree(entry.path(), &home))
+        .filter_entry(|entry| !is_protected_tree(entry.path(), &home) && !skip_dir(entry))
     {
         controller
             .check()
@@ -3373,6 +3903,11 @@ async fn calculate_dir_size(path: &Path, controller: Controller) -> Result<u64, 
 async fn calculate_checksums(path: &Path) -> Result<FileChecksums, String> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
+        // Hashing a dataless file would download all of it. The details view hides the
+        // button for one; this catches a file evicted since.
+        if fs::metadata(&path).is_ok_and(|m| is_dataless(&m)) {
+            return Err(fl!("not-downloaded"));
+        }
         let mut file = File::open(&path).map_err(|e| e.to_string())?;
         let mut sha256_hasher = Sha256::new();
 
@@ -4934,7 +5469,7 @@ impl Tab {
             Message::Open(path_opt) => {
                 match path_opt {
                     Some(path) => {
-                        if path.is_dir() {
+                        if path.is_dir() && !path_is_package(&path) {
                             cd = Some(Location::Path(path));
                         } else {
                             commands.push(Command::OpenFile(vec![path]));
@@ -5016,6 +5551,18 @@ impl Tab {
             }
             Message::OpenPrivacySettings => {
                 open_privacy_settings();
+            }
+            Message::ShowPackageContents => {
+                if let Some(location) = self.items_opt.as_ref().and_then(|items| {
+                    let mut selected = items.iter().filter(|item| item.selected);
+                    let item = selected.next().filter(|_| selected.next().is_none())?;
+                    item.metadata
+                        .is_package()
+                        .then(|| item.location_opt.clone())
+                        .flatten()
+                }) {
+                    cd = Some(location);
+                }
             }
             Message::Reload => {
                 //TODO: support keeping selected locations without paths
@@ -5367,8 +5914,11 @@ impl Tab {
                     let heading_sort = if self.sort_name == heading_option {
                         !self.sort_direction
                     } else {
-                        // Default modified to descending, and others to ascending.
-                        heading_option != HeadingOptions::Modified
+                        // Default dates to descending, and others to ascending.
+                        !matches!(
+                            heading_option,
+                            HeadingOptions::Modified | HeadingOptions::DateAdded
+                        )
                     };
 
                     if !matches!(self.location, Location::Desktop(..)) {
@@ -5647,9 +6197,15 @@ impl Tab {
                 items.sort_by(|a, b| {
                     // entries take precedence over size
                     let get_size = |x: &Item| match &x.metadata {
+                        // A package's own length is that of a directory, so it sorts as an
+                        // empty file.
+                        ItemMetadata::Path {
+                            is_package: true, ..
+                        } => (false, 0),
                         ItemMetadata::Path {
                             metadata,
                             children_opt,
+                            ..
                         } => {
                             if metadata.is_dir() {
                                 (true, children_opt.unwrap_or_default() as u64)
@@ -5721,6 +6277,13 @@ impl Tab {
                         check_reverse(a_modified.cmp(&b_modified), sort_direction)
                     }
                 });
+            }
+            HeadingOptions::Kind => {
+                items.sort_by(|a, b| compare_by_kind(a.1, b.1, folders_first, sort_direction));
+            }
+            HeadingOptions::DateAdded => {
+                items
+                    .sort_by(|a, b| compare_by_date_added(a.1, b.1, folders_first, sort_direction));
             }
             HeadingOptions::TrashedOn => {
                 let time_deleted = |x: &Item| match &x.metadata {
@@ -6512,17 +7075,20 @@ impl Tab {
                         ))
                         .into(),
                         widget::tooltip(
-                            widget::button::custom(Item::grid_display_name(&item.display_name))
-                                .id(item.button_id.clone())
-                                .padding([0, space_xxxs])
-                                .class(button_style(
-                                    item.selected,
-                                    item.highlighted,
-                                    item.cut,
-                                    true,
-                                    true,
-                                    matches!(self.mode, Mode::Desktop),
-                                )),
+                            widget::button::custom(item.with_tag_dots(
+                                Item::grid_display_name(&item.display_name),
+                                Some((item_width - 2 * space_xxxs as usize) as f32),
+                            ))
+                            .id(item.button_id.clone())
+                            .padding([0, space_xxxs])
+                            .class(button_style(
+                                item.selected,
+                                item.highlighted,
+                                item.cut,
+                                true,
+                                true,
+                                matches!(self.mode, Mode::Desktop),
+                            )),
                             widget::text::body(item.hover_text()),
                             widget::tooltip::Position::Bottom,
                         )
@@ -6825,6 +7391,7 @@ impl Tab {
                         ItemMetadata::Path {
                             metadata,
                             children_opt,
+                            ..
                         } => {
                             if metadata.is_dir() {
                                 //TODO: translate
@@ -6892,7 +7459,10 @@ impl Tab {
                                 .size(icon_size)
                                 .into(),
                             widget::column::with_children([
-                                Item::list_display_name(item.display_name.clone()).into(),
+                                item.with_tag_dots(
+                                    Item::list_display_name(item.display_name.clone()),
+                                    None,
+                                ),
                                 //TODO: translate?
                                 widget::text::caption(format!("{modified_text} - {size_text}"))
                                     .into(),
@@ -6909,7 +7479,10 @@ impl Tab {
                                 .size(icon_size)
                                 .into(),
                             widget::column::with_children([
-                                Item::list_display_name(item.display_name.clone()).into(),
+                                item.with_tag_dots(
+                                    Item::list_display_name(item.display_name.clone()),
+                                    None,
+                                ),
                                 widget::text::caption(match item.path_opt() {
                                     Some(path) => path.display().to_string(),
                                     None => String::new(),
@@ -6934,9 +7507,11 @@ impl Tab {
                                 .content_fit(ContentFit::Contain)
                                 .size(icon_size)
                                 .into(),
-                            Item::list_display_name(item.display_name.clone())
-                                .width(Length::Fill)
-                                .into(),
+                            item.with_tag_dots(
+                                Item::list_display_name(item.display_name.clone())
+                                    .width(Length::Fill),
+                                None,
+                            ),
                             widget::text::body(modified_text.clone())
                                 .width(Length::Fixed(modified_width))
                                 .into(),
@@ -7122,6 +7697,7 @@ impl Tab {
         size: Size,
         clipboard_paste_available: bool,
         context_actions: &'a [ContextActionPreset],
+        context_quick_bar: bool,
     ) -> Element<'a, Message> {
         // Update cached size
         self.size_opt.set(Some(size));
@@ -7225,6 +7801,7 @@ impl Tab {
                 modifiers,
                 clipboard_paste_available,
                 context_actions,
+                context_quick_bar,
             )),
         )
         .item_width(cosmic::widget::menu::ItemWidth::Uniform(360))
@@ -7257,7 +7834,10 @@ impl Tab {
                     );
                 }
             }
-            Location::Recents | Location::Search(SearchLocation::Recents, ..) => {
+            // On macOS, Recents is Spotlight's history, which this app cannot clear.
+            Location::Recents | Location::Search(SearchLocation::Recents, ..)
+                if cfg!(not(target_os = "macos")) =>
+            {
                 if let Some(items) = self.items_opt()
                     && !items.is_empty()
                 {
@@ -7600,6 +8180,7 @@ impl Tab {
         modifiers: &'a Modifiers,
         clipboard_paste_available: bool,
         context_actions: &'a [ContextActionPreset],
+        context_quick_bar: bool,
     ) -> Element<'a, Message> {
         widget::responsive(move |size| {
             widget::id_container(
@@ -7609,6 +8190,7 @@ impl Tab {
                     size,
                     clipboard_paste_available,
                     context_actions,
+                    context_quick_bar,
                 ),
                 Id::new(format!(
                     "tab-{}-{}",
@@ -8266,11 +8848,54 @@ mod tests {
         empty_reason, is_always_hidden, is_protected_tree, item_from_denied_entry, item_from_path,
         logical_scroll_pixels, respond_to_scroll_direction, scan_path, zoom_steps_for_scroll,
     };
+    use super::{ItemKind, compare_by_date_added, compare_by_kind};
     use crate::app::test_utils::{
         NAME_LEN, NUM_DIRS, NUM_FILES, NUM_HIDDEN, NUM_NESTED, assert_eq_tab_path, empty_fs,
         eq_path_item, filter_dirs, read_dir_sorted, simple_fs, tab_click_new,
     };
     use crate::config::{IconSizes, TabConfig, ThumbCfg};
+
+    #[test]
+    fn where_abbreviates_the_home_folder() {
+        use super::abbreviate_home;
+        let home = Path::new("/Users/someone");
+        assert_eq!(
+            abbreviate_home(Path::new("/Users/someone/Documents/Work"), home),
+            "~/Documents/Work"
+        );
+        assert_eq!(abbreviate_home(home, home), "~");
+        assert_eq!(
+            abbreviate_home(Path::new("/Users/someoneelse/Documents"), home),
+            "/Users/someoneelse/Documents"
+        );
+        assert_eq!(
+            abbreviate_home(Path::new("/Applications"), home),
+            "/Applications"
+        );
+        // A home of `/` is a fallback, not a real home: every path would become `~/...`.
+        assert_eq!(
+            abbreviate_home(Path::new("/Applications"), Path::new("/")),
+            "/Applications"
+        );
+    }
+
+    #[test]
+    fn get_info_reads_where_from_the_parent_folder() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("file.txt");
+        fs::write(&path, b"hello").unwrap();
+        let info = super::GetInfo::read(&path);
+        assert_eq!(
+            info.location.as_deref(),
+            Some(dir.path().display().to_string().as_str())
+        );
+        #[cfg(target_os = "macos")]
+        {
+            assert!(info.kind.is_some_and(|kind| !kind.is_empty()));
+            assert!(info.added.is_some());
+            assert_eq!(info.version, None);
+        }
+    }
 
     // Boilerplate for tab tests. Checks if simulated clicks selected items.
     fn tab_selects_item(
@@ -8629,6 +9254,179 @@ mod tests {
         let path = dir.path().join(name);
         fs::write(&path, b"").expect("failed to write the test file");
         item_from_path(path, IconSizes::default()).expect("failed to build the item")
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_app_bundle_lists_as_a_file() {
+        let item = item_from_path("/System/Applications/Calculator.app", IconSizes::default())
+            .expect("failed to build the item");
+        assert!(item.metadata.is_package());
+        assert!(!item.metadata.is_dir(), "a package must open, not navigate");
+        assert_ne!(item.mime, "inode/directory");
+        // No item count: that would show it as a folder.
+        assert_eq!(item.metadata.children_count(), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_plain_directory_still_lists_as_a_folder() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let sub = dir.path().join("plain");
+        fs::create_dir(&sub)?;
+        let item = item_from_path(&sub, IconSizes::default()).expect("failed to build the item");
+        assert!(!item.metadata.is_package());
+        assert!(item.metadata.is_dir());
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn packages_sort_among_files() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        fs::create_dir(dir.path().join("b-folder"))?;
+        fs::create_dir(dir.path().join("a.rtfd"))?;
+        fs::write(dir.path().join("c.txt"), b"")?;
+        let names: Vec<String> = scan_path(&dir.path().to_path_buf(), IconSizes::default())
+            .into_iter()
+            .map(|item| item.name)
+            .collect();
+        assert_eq!(names, ["b-folder", "a.rtfd", "c.txt"]);
+        Ok(())
+    }
+
+    /// An item named `name` whose Kind is `type_id`, or the MIME fallback when `None`.
+    fn item_of_kind(dir: &TempDir, name: &str, type_id: Option<&str>) -> Item {
+        let mut item = item_named(dir, name);
+        item.kind_opt = type_id.map(|type_id| ItemKind {
+            type_id: type_id.to_string(),
+            description: type_id.to_string(),
+        });
+        item
+    }
+
+    fn folder_item(dir: &TempDir, name: &str) -> Item {
+        let path = dir.path().join(name);
+        fs::create_dir(&path).expect("failed to create the test folder");
+        let mut item = item_from_path(path, IconSizes::default()).expect("failed to build");
+        item.kind_opt = Some(ItemKind {
+            type_id: "public.folder".to_string(),
+            description: "Folder".to_string(),
+        });
+        item
+    }
+
+    fn names_sorted_by(
+        mut items: Vec<Item>,
+        compare: fn(&Item, &Item, bool, bool) -> std::cmp::Ordering,
+        folders_first: bool,
+        ascending: bool,
+    ) -> Vec<String> {
+        items.sort_by(|a, b| compare(a, b, folders_first, ascending));
+        items.into_iter().map(|item| item.name).collect()
+    }
+
+    #[test]
+    fn sort_by_kind_groups_each_type_in_name_order() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let items = vec![
+            item_of_kind(&dir, "c.pdf", Some("com.adobe.pdf")),
+            item_of_kind(&dir, "a.txt", Some("public.plain-text")),
+            folder_item(&dir, "zfolder"),
+            item_of_kind(&dir, "b.pdf", Some("com.adobe.pdf")),
+            item_of_kind(&dir, "d.png", Some("public.png")),
+        ];
+
+        assert_eq!(
+            names_sorted_by(items.clone(), compare_by_kind, true, true),
+            ["zfolder", "b.pdf", "c.pdf", "a.txt", "d.png"]
+        );
+        // Reversed, the groups swap but names inside a group stay A to Z, and folders
+        // still lead.
+        assert_eq!(
+            names_sorted_by(items.clone(), compare_by_kind, true, false),
+            ["zfolder", "d.png", "a.txt", "b.pdf", "c.pdf"]
+        );
+        // Without folders first the folder sorts by its own type, public.folder.
+        assert_eq!(
+            names_sorted_by(items, compare_by_kind, false, true),
+            ["b.pdf", "c.pdf", "zfolder", "a.txt", "d.png"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sort_by_kind_falls_back_to_the_mime_type() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let with_mime = |name: &str, mime: &str| {
+            let mut item = item_of_kind(&dir, name, None);
+            item.mime = mime.parse().expect("a valid MIME type");
+            item
+        };
+        let text = with_mime("notes.txt", "text/plain");
+        assert_eq!(text.kind_sort_key(), "text/plain");
+        let items = vec![
+            text,
+            with_mime("b.pdf", "application/pdf"),
+            with_mime("a.pdf", "application/pdf"),
+        ];
+        assert_eq!(
+            names_sorted_by(items, compare_by_kind, true, true),
+            ["a.pdf", "b.pdf", "notes.txt"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sort_by_date_added_puts_undated_items_last() -> io::Result<()> {
+        use std::time::{Duration, SystemTime};
+        let dir = TempDir::new()?;
+        let dated = |name: &str, secs: Option<u64>| {
+            let mut item = item_named(&dir, name);
+            item.date_added_opt =
+                secs.map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs));
+            item
+        };
+        let mut folder = folder_item(&dir, "folder");
+        folder.date_added_opt = Some(SystemTime::UNIX_EPOCH);
+        let mut items = vec![
+            dated("old", Some(100)),
+            dated("new", Some(300)),
+            dated("mid", Some(200)),
+            folder,
+        ];
+        assert_eq!(
+            names_sorted_by(items.clone(), compare_by_date_added, true, false),
+            ["folder", "new", "mid", "old"]
+        );
+        assert_eq!(
+            names_sorted_by(items.clone(), compare_by_date_added, false, true),
+            ["folder", "old", "mid", "new"]
+        );
+
+        // An item with no date of its own and no creation time to fall back on goes last
+        // in both directions.
+        let mut undated = item_named(&dir, "undated");
+        undated.date_added_opt = None;
+        undated.metadata = ItemMetadata::SimpleFile { size: 0 };
+        items.push(undated);
+        for ascending in [true, false] {
+            let names = names_sorted_by(items.clone(), compare_by_date_added, false, ascending);
+            assert_eq!(names.last().map(String::as_str), Some("undated"));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_local_scan_reads_kind_and_date_added() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let pdf = item_named(&dir, "report.pdf");
+        let kind = pdf.kind_opt.expect("a local file should have a Kind");
+        assert_eq!(kind.type_id, "com.adobe.pdf");
+        assert!(!kind.description.is_empty());
+        assert!(pdf.date_added_opt.is_some());
+        Ok(())
     }
 
     #[test]
@@ -9068,6 +9866,7 @@ mod tests {
         let item_metadata = ItemMetadata::Path {
             metadata,
             children_opt: None,
+            is_package: false,
         };
         let thumb = ItemThumbnail::new(
             &path,
@@ -9104,6 +9903,7 @@ trailer<</Root 1 0 R/Size 4>>\n\
         let item_metadata = ItemMetadata::Path {
             metadata: fs::metadata(&path)?,
             children_opt: None,
+            is_package: false,
         };
 
         let thumb = ItemThumbnail::new(
@@ -9132,6 +9932,7 @@ trailer<</Root 1 0 R/Size 4>>\n\
         let item_metadata = ItemMetadata::Path {
             metadata: fs::metadata(&path)?,
             children_opt: None,
+            is_package: false,
         };
 
         let thumb = ItemThumbnail::new(
@@ -9151,6 +9952,26 @@ trailer<</Root 1 0 R/Size 4>>\n\
         Ok(())
     }
 
+    #[cfg(all(target_os = "macos", feature = "quicklook"))]
+    #[test]
+    fn item_thumbnail_app_bundle_gets_its_icon_from_quick_look() {
+        let item = item_from_path("/System/Applications/Calculator.app", IconSizes::default())
+            .expect("failed to build the item");
+        let thumb = ItemThumbnail::new(
+            Path::new("/System/Applications/Calculator.app"),
+            item.metadata,
+            item.mime,
+            128,
+            100 * 1024 * 1024,
+            1,
+            8,
+        );
+        assert!(
+            matches!(thumb, ItemThumbnail::QuickLook(_)),
+            "an app should show its own icon, not a folder"
+        );
+    }
+
     #[test]
     fn item_thumbnail_text_preview_empty_file_returns_not_image() -> io::Result<()> {
         let dir = TempDir::new()?;
@@ -9160,6 +9981,7 @@ trailer<</Root 1 0 R/Size 4>>\n\
         let item_metadata = ItemMetadata::Path {
             metadata,
             children_opt: None,
+            is_package: false,
         };
         let thumb = ItemThumbnail::new(
             &path,
@@ -9187,6 +10009,7 @@ trailer<</Root 1 0 R/Size 4>>\n\
         let item_metadata = ItemMetadata::Path {
             metadata,
             children_opt: None,
+            is_package: false,
         };
         let thumb = ItemThumbnail::new(
             &path,
@@ -9207,6 +10030,172 @@ trailer<</Root 1 0 R/Size 4>>\n\
                 thumb
             ),
         }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod fs_flags_tests {
+    use super::*;
+    use std::{ffi::CString, io, os::unix::ffi::OsStrExt as _};
+    use tempfile::TempDir;
+
+    unsafe extern "C" {
+        fn lchflags(path: *const libc::c_char, flags: libc::c_uint) -> libc::c_int;
+    }
+
+    /// Sets `UF_HIDDEN` on `path` itself, not on what a symlink points to.
+    fn set_hidden(path: &Path) {
+        let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c_path` is a valid C string.
+        let ret = unsafe { lchflags(c_path.as_ptr(), libc::UF_HIDDEN) };
+        assert_eq!(ret, 0, "lchflags: {}", io::Error::last_os_error());
+    }
+
+    #[test]
+    fn uf_hidden_marks_item_hidden() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let shown = dir.path().join("shown");
+        let flagged = dir.path().join("flagged");
+        fs::write(&shown, b"x")?;
+        fs::write(&flagged, b"x")?;
+        set_hidden(&flagged);
+
+        assert!(!item_from_path(&shown, IconSizes::default()).unwrap().hidden);
+        assert!(
+            item_from_path(&flagged, IconSizes::default())
+                .unwrap()
+                .hidden
+        );
+        Ok(())
+    }
+
+    /// `/etc` is a hidden symlink to the unhidden `/private/etc`. The link's flag wins.
+    #[test]
+    fn uf_hidden_on_symlink_itself_hides_it() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        fs::create_dir(&target)?;
+        std::os::unix::fs::symlink(&target, &link)?;
+        set_hidden(&link);
+
+        assert!(
+            !item_from_path(&target, IconSizes::default())
+                .unwrap()
+                .hidden
+        );
+        assert!(item_from_path(&link, IconSizes::default()).unwrap().hidden);
+        Ok(())
+    }
+
+    #[test]
+    fn root_is_local() {
+        assert_eq!(fs_kind(&fs::metadata("/").unwrap()), FsKind::Local);
+    }
+
+    /// Listing `/` shows only the Finder folders unless hidden files are shown.
+    #[test]
+    fn root_listing_hides_system_names() {
+        let items = scan_path(&PathBuf::from("/"), IconSizes::default());
+        let shown: Vec<&str> = items
+            .iter()
+            .filter(|item| !item.hidden)
+            .map(|item| item.name.as_str())
+            .collect();
+        for name in ["Applications", "Library", "System", "Users"] {
+            assert!(shown.contains(&name), "/{name} is hidden; shown: {shown:?}");
+        }
+        for name in [
+            "bin", "etc", "private", "sbin", "tmp", "usr", "var", "Volumes",
+        ] {
+            assert!(!shown.contains(&name), "/{name} is shown");
+            assert!(
+                items.iter().any(|item| item.name == name),
+                "/{name} missing from the listing"
+            );
+        }
+    }
+
+    /// A dataless file gets a name-based mime and no thumbnail. The content is a shell
+    /// script, so a content sniff would not answer `image/png`.
+    #[test]
+    fn dataless_file_skips_content_reads() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let path = dir.path().join("photo.png");
+        fs::write(&path, b"#!/bin/sh\necho not a png\n")?;
+        let metadata = fs::metadata(&path)?;
+
+        let item = item_from_entry_with_dataless(
+            path.clone(),
+            "photo.png".into(),
+            metadata.clone(),
+            IconSizes::default(),
+            true,
+        );
+        assert_eq!(item.mime, "image/png");
+        assert!(matches!(item.thumbnail_opt, Some(ItemThumbnail::NotImage)));
+
+        let item = item_from_entry_with_dataless(
+            path,
+            "photo.png".into(),
+            metadata,
+            IconSizes::default(),
+            false,
+        );
+        assert!(item.thumbnail_opt.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn dataless_dir_is_not_listed_or_sized() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub)?;
+        fs::write(sub.join("a"), b"x")?;
+        let metadata = fs::metadata(&sub)?;
+
+        let item = item_from_entry_with_dataless(
+            sub.clone(),
+            "sub".into(),
+            metadata.clone(),
+            IconSizes::default(),
+            true,
+        );
+        assert!(matches!(item.dir_size, DirSize::NotDirectory));
+        assert!(matches!(
+            item.metadata,
+            ItemMetadata::Path {
+                children_opt: None,
+                ..
+            }
+        ));
+
+        let item =
+            item_from_entry_with_dataless(sub, "sub".into(), metadata, IconSizes::default(), false);
+        assert!(matches!(item.dir_size, DirSize::Calculating(_)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dir_size_does_not_descend_skipped_dirs() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        fs::create_dir(dir.path().join("kept"))?;
+        fs::create_dir(dir.path().join("evicted"))?;
+        fs::write(dir.path().join("kept/a"), [0u8; 10])?;
+        fs::write(dir.path().join("evicted/b"), [0u8; 20])?;
+
+        let all = calculate_dir_size(dir.path(), Controller::default())
+            .await
+            .unwrap();
+        assert_eq!(all, 30);
+
+        let skipping = calculate_dir_size_skipping(dir.path(), Controller::default(), |entry| {
+            entry.file_name() == "evicted"
+        })
+        .await
+        .unwrap();
+        assert_eq!(skipping, 10);
         Ok(())
     }
 }

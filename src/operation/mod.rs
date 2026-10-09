@@ -93,41 +93,53 @@ async fn copy_or_move(
     msg_tx: &Arc<TokioMutex<Sender<Message>>>,
     controller: Controller,
 ) -> Result<OperationSelection, OperationError> {
+    log::info!(
+        "{} {:?} to {}",
+        match method {
+            Method::Copy => "Copy",
+            Method::Move { .. } => "Move",
+        },
+        paths,
+        to.display()
+    );
+
+    // Handle duplicate file names by renaming paths
+    let from_to_pairs = paths
+        .into_iter()
+        .filter_map(|from| {
+            if matches!(from.parent(), Some(parent) if parent == to)
+                && matches!(method, Method::Copy)
+            {
+                // `from`'s parent is equal to `to` which means we're copying to the same
+                // directory (duplicating files)
+                let to = copy_unique_path(&from, &to);
+                Some((from, to))
+            } else if let Some(name) = from.file_name() {
+                let to = to.join(name);
+                Some((from, to))
+            } else {
+                //TODO: how to handle from missing file name?
+                None
+            }
+        })
+        .collect();
+
+    transfer(from_to_pairs, method, msg_tx, controller).await
+}
+
+/// Copy or move each `(from, to)` pair, with progress, cancel and the replace dialog.
+async fn transfer(
+    from_to_pairs: Vec<(PathBuf, PathBuf)>,
+    method: Method,
+    msg_tx: &Arc<TokioMutex<Sender<Message>>>,
+    controller: Controller,
+) -> Result<OperationSelection, OperationError> {
     let msg_tx = msg_tx.clone();
     let controller_c = controller.clone();
 
     compio::runtime::spawn(async move {
         let controller = controller_c;
-        log::info!(
-            "{} {:?} to {}",
-            match method {
-                Method::Copy => "Copy",
-                Method::Move { .. } => "Move",
-            },
-            paths,
-            to.display()
-        );
-
-        // Handle duplicate file names by renaming paths
-        let from_to_pairs_iter = paths
-            .into_iter()
-            .zip(std::iter::repeat(to.as_path()))
-            .filter_map(|(from, to)| {
-                if matches!(from.parent(), Some(parent) if parent == to)
-                    && matches!(method, Method::Copy)
-                {
-                    // `from`'s parent is equal to `to` which means we're copying to the same
-                    // directory (duplicating files)
-                    let to = copy_unique_path(&from, to);
-                    Some((from, to))
-                } else if let Some(name) = from.file_name() {
-                    let to = to.join(name);
-                    Some((from, to))
-                } else {
-                    //TODO: how to handle from missing file name?
-                    None
-                }
-            });
+        let from_to_pairs_iter = from_to_pairs.into_iter();
 
         // Attempt quick and simple renames
         //TODO: allow rename to be used for directories in recursive context?
@@ -364,6 +376,10 @@ pub enum Operation {
     Delete {
         paths: Vec<PathBuf>,
     },
+    /// Copy each item next to itself with Finder's " copy" name
+    Duplicate {
+        paths: Vec<PathBuf>,
+    },
     /// Delete a path from the trash
     DeleteTrash {
         items: Vec<trash::TrashItem>,
@@ -387,6 +403,11 @@ pub enum Operation {
     },
     NewFolder {
         path: PathBuf,
+    },
+    /// Create the folder `path` and move `paths` into it
+    NewFolderWithItems {
+        path: PathBuf,
+        paths: Vec<PathBuf>,
     },
     /// Permanently delete items, skipping the trash
     PermanentlyDelete {
@@ -494,6 +515,13 @@ impl Operation {
                 to = file_name(to),
                 progress = progress()
             ),
+            Self::Duplicate { paths } => fl!(
+                "copying",
+                items = paths.len(),
+                from = paths_parent_name(paths),
+                to = paths_parent_name(paths),
+                progress = progress()
+            ),
             Self::Delete { paths } => fl!(
                 "moving",
                 items = paths.len(),
@@ -528,7 +556,7 @@ impl Operation {
                 name = file_name(path),
                 parent = parent_name(path)
             ),
-            Self::NewFolder { path } => fl!(
+            Self::NewFolder { path } | Self::NewFolderWithItems { path, .. } => fl!(
                 "creating",
                 name = file_name(path),
                 parent = parent_name(path)
@@ -566,6 +594,12 @@ impl Operation {
                 from = paths_parent_name(paths),
                 to = file_name(to)
             ),
+            Self::Duplicate { paths } => fl!(
+                "copied",
+                items = paths.len(),
+                from = paths_parent_name(paths),
+                to = paths_parent_name(paths)
+            ),
             Self::Delete { paths } => fl!(
                 "moved",
                 items = paths.len(),
@@ -595,7 +629,7 @@ impl Operation {
                 name = file_name(path),
                 parent = parent_name(path)
             ),
-            Self::NewFolder { path } => fl!(
+            Self::NewFolder { path } | Self::NewFolderWithItems { path, .. } => fl!(
                 "created",
                 name = file_name(path),
                 parent = parent_name(path)
@@ -624,9 +658,11 @@ impl Operation {
             | Self::Copy { .. }
             | Self::Delete { .. }
             | Self::DeleteTrash { .. }
+            | Self::Duplicate { .. }
             | Self::EmptyTrash
             | Self::Extract { .. }
             | Self::Move { .. }
+            | Self::NewFolderWithItems { .. }
             | Self::PermanentlyDelete { .. }
             | Self::Restore { .. } => true,
             Self::NewFile { .. }
@@ -846,6 +882,66 @@ impl Operation {
             Self::Copy { paths, to } => {
                 copy_or_move(paths, to, Method::Copy, msg_tx, controller).await
             }
+            // One worker pass through NSFileManager, journaled for Undo and Put Back.
+            #[cfg(target_os = "macos")]
+            Self::Delete { paths } => {
+                let journal = crate::trash_macos::journal_path().ok_or_else(|| {
+                    OperationError::from_msg("no data folder for the trash journal")
+                })?;
+                let total = paths.len();
+                let controller_clone = controller.clone();
+                compio::runtime::spawn_blocking(move || {
+                    let controller = controller_clone;
+                    crate::trash_macos::trash_paths(
+                        &journal,
+                        &paths,
+                        |i| {
+                            futures::executor::block_on(controller.check())
+                                .map_err(|s| OperationError::from_state(s, &controller))?;
+                            controller.set_progress(i as f32 / total as f32);
+                            Ok(())
+                        },
+                        |e| OperationError::from_err(e, &controller),
+                    )
+                })
+                .await
+                .map_err(wrap_compio_spawn_error)??;
+                Ok(OperationSelection::default())
+            }
+            Self::Duplicate { paths } => {
+                let mut reserved = std::collections::HashSet::new();
+                let from_to_pairs = paths
+                    .into_iter()
+                    .filter_map(|from| {
+                        let to = crate::duplicate::duplicate_path(&from, &reserved)?;
+                        reserved.insert(to.clone());
+                        Some((from, to))
+                    })
+                    .collect();
+                transfer(from_to_pairs, Method::Copy, msg_tx, controller).await
+            }
+            Self::NewFolderWithItems { path, paths } => {
+                // The existing operations, run in sequence under one controller.
+                Box::pin(
+                    Self::NewFolder { path: path.clone() }.perform(msg_tx, controller.clone()),
+                )
+                .await?;
+                Box::pin(
+                    Self::Move {
+                        paths: paths.clone(),
+                        to: path.clone(),
+                        cross_device_copy: false,
+                    }
+                    .perform(msg_tx, controller),
+                )
+                .await?;
+                // The moved items were the selection; ignoring them lets the folder take over.
+                Ok(OperationSelection {
+                    ignored: paths,
+                    selected: vec![path],
+                })
+            }
+            #[cfg(not(target_os = "macos"))]
             Self::Delete { paths } => {
                 let total = paths.len();
                 for (i, path) in paths.into_iter().enumerate() {
@@ -1124,9 +1220,20 @@ impl Operation {
                         .check()
                         .await
                         .map_err(|s| OperationError::from_state(s, &controller))?;
-                    compio::fs::rename(&from, &to)
+                    let (from_c, to_c) = (from.clone(), to.clone());
+                    compio::runtime::spawn_blocking(move || rename_no_replace(&from_c, &to_c))
                         .await
-                        .map_err(|e| OperationError::from_err(e, &controller))?;
+                        .map_err(wrap_compio_spawn_error)?
+                        .map_err(|e| {
+                            if e.kind() == io::ErrorKind::AlreadyExists {
+                                OperationError::from_err(
+                                    fl!("undo-refused-occupied", path = to.display().to_string()),
+                                    &controller,
+                                )
+                            } else {
+                                OperationError::from_err(e, &controller)
+                            }
+                        })?;
                     Result::<_, OperationError>::Ok(OperationSelection {
                         ignored: vec![from],
                         selected: vec![to],
@@ -1135,12 +1242,34 @@ impl Operation {
             }
             .await
             .map_err(wrap_compio_spawn_error)?,
+            // Put Back from the journal that the macOS Delete arm writes.
             #[cfg(target_os = "macos")]
-            Self::Restore { .. } => {
-                // TODO: add support for macos
-                return Err(OperationError::from_msg(
-                    "Restoring from trash is not supported on macos",
-                ));
+            Self::Restore { items } => {
+                let journal = crate::trash_macos::journal_path().ok_or_else(|| {
+                    OperationError::from_msg("no data folder for the trash journal")
+                })?;
+                let total = items.len();
+                let controller_clone = controller.clone();
+                let paths = compio::runtime::spawn_blocking(move || {
+                    let controller = controller_clone;
+                    crate::trash_macos::restore_items(
+                        &journal,
+                        &items,
+                        |i| {
+                            futures::executor::block_on(controller.check())
+                                .map_err(|s| OperationError::from_state(s, &controller))?;
+                            controller.set_progress(i as f32 / total as f32);
+                            Ok(())
+                        },
+                        |e| OperationError::from_err(e, &controller),
+                    )
+                })
+                .await
+                .map_err(wrap_compio_spawn_error)??;
+                Ok(OperationSelection {
+                    ignored: Vec::new(),
+                    selected: paths,
+                })
             }
             #[cfg(not(target_os = "macos"))]
             Self::Restore { items } => {
@@ -1255,6 +1384,91 @@ impl Operation {
     }
 }
 
+/// Rename `from` to `to` without replacing anything already at `to`.
+///
+/// Fails with [`io::ErrorKind::AlreadyExists`] if `to` exists, unless `to` is `from` itself under
+/// another case, as on a case-insensitive volume. The check and the rename are one atomic step
+/// where the platform offers it: `renamex_np` with `RENAME_EXCL` on macOS, `renameat2` with
+/// `RENAME_NOREPLACE` on Linux with glibc. Elsewhere, or on a volume that does not support the
+/// flag, it checks first and then renames.
+pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    match rename_exclusive(from, to) {
+        Err(err)
+            if err.kind() == io::ErrorKind::AlreadyExists && crate::undo::same_entry(from, to) =>
+        {
+            fs::rename(from, to)
+        }
+        Err(err) if is_unsupported(&err) => rename_checked(from, to),
+        result => result,
+    }
+}
+
+/// Check, then rename: not atomic, for platforms and volumes without an exclusive rename.
+fn rename_checked(from: &Path, to: &Path) -> io::Result<()> {
+    if to.symlink_metadata().is_ok() && !crate::undo::same_entry(from, to) {
+        return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+    }
+    fs::rename(from, to)
+}
+
+fn is_unsupported(err: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        matches!(
+            err.raw_os_error(),
+            Some(libc::ENOTSUP | libc::ENOSYS | libc::EINVAL)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        err.kind() == io::ErrorKind::Unsupported
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // SAFETY: both pointers are valid NUL-terminated strings that outlive the call.
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // SAFETY: both pointers are valid NUL-terminated strings that outlive the call.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    rename_checked(from, to)
+}
+
 #[track_caller]
 fn wrap_compio_spawn_error(err: Box<dyn std::any::Any + Send>) -> OperationError {
     log::error!(
@@ -1295,19 +1509,21 @@ mod tests {
         paths: Vec<PathBuf>,
         to: PathBuf,
     ) -> Result<OperationSelection, OperationError> {
+        perform_operation(Operation::Copy { paths, to }).await
+    }
+
+    /// Run any operation, answering replace requests with Cancel.
+    pub async fn perform_operation(
+        operation: Operation,
+    ) -> Result<OperationSelection, OperationError> {
         let id = fastrand::u64(0..u64::MAX);
         let (tx, mut rx) = mpsc::channel(1);
-        let paths_clone = paths.clone();
-        let to_clone = to.clone();
 
         // Wrap this into its own future so that it may be polled concurerntly with the message handler.
         let handle_copy = async move {
-            Operation::Copy {
-                paths: paths_clone,
-                to: to_clone,
-            }
-            .perform(&sync::Mutex::new(tx).into(), Controller::default())
-            .await
+            operation
+                .perform(&sync::Mutex::new(tx).into(), Controller::default())
+                .await
         };
 
         // Concurrently handling messages will prevent the mpsc channel from blocking when full.
@@ -1328,6 +1544,40 @@ mod tests {
         };
 
         future::join(handle_messages, handle_copy).await.1
+    }
+
+    #[test]
+    fn rename_no_replace_refuses_an_existing_target() -> io::Result<()> {
+        let fs = empty_fs()?;
+        let from = fs.path().join("from");
+        let to = fs.path().join("to");
+        fs::write(&from, b"from")?;
+        fs::write(&to, b"to")?;
+
+        let err = super::rename_no_replace(&from, &to).expect_err("must not overwrite");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&from)?, b"from");
+        assert_eq!(fs::read(&to)?, b"to");
+
+        fs::remove_file(&to)?;
+        super::rename_no_replace(&from, &to)?;
+        assert!(!from.exists());
+        assert_eq!(fs::read(&to)?, b"from");
+        Ok(())
+    }
+
+    #[test]
+    fn rename_no_replace_allows_a_case_only_rename() -> io::Result<()> {
+        let fs = empty_fs()?;
+        let lower = fs.path().join("name");
+        let upper = fs.path().join("NAME");
+        fs::write(&lower, b"x")?;
+        super::rename_no_replace(&lower, &upper)?;
+        let names: Vec<_> = fs::read_dir(fs.path())?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<io::Result<_>>()?;
+        assert_eq!(names, vec![std::ffi::OsString::from("NAME")]);
+        Ok(())
     }
 
     #[test(compio::test)]
@@ -1497,6 +1747,53 @@ mod tests {
 
         assert!(file_path.exists(), "Original file should still exist");
         assert!(expected.exists(), "File should have been copied");
+
+        Ok(())
+    }
+
+    #[test(compio::test)]
+    async fn duplicate_twice_uses_finder_names() -> io::Result<()> {
+        let fs = empty_fs()?;
+        let path = fs.path();
+        let original = path.join("a.txt");
+        fs::write(&original, b"contents")?;
+
+        for expected in ["a copy.txt", "a copy 2.txt"] {
+            let op_sel = perform_operation(Operation::Duplicate {
+                paths: vec![original.clone()],
+            })
+            .await
+            .expect("Duplicate should have succeeded");
+            let expected = path.join(expected);
+            assert_eq!(fs::read(&expected)?, b"contents");
+            assert_eq!(op_sel.selected, vec![expected], "the copy is selected");
+        }
+        assert!(original.exists(), "Original file should still exist");
+
+        Ok(())
+    }
+
+    #[test(compio::test)]
+    async fn new_folder_with_items_moves_the_selection() -> io::Result<()> {
+        let fs = empty_fs()?;
+        let path = fs.path();
+        let a = path.join("a.txt");
+        let b = path.join("b");
+        fs::write(&a, b"a")?;
+        fs::create_dir(&b)?;
+        let folder = path.join("New Folder With Items");
+
+        let op_sel = perform_operation(Operation::NewFolderWithItems {
+            path: folder.clone(),
+            paths: vec![a.clone(), b.clone()],
+        })
+        .await
+        .expect("New Folder with Selection should have succeeded");
+
+        assert!(!a.exists() && !b.exists(), "items left their folder");
+        assert!(folder.join("a.txt").is_file());
+        assert!(folder.join("b").is_dir());
+        assert_eq!(op_sel.selected, vec![folder]);
 
         Ok(())
     }

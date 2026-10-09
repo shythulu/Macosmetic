@@ -11,6 +11,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use crate::app::Action;
+use crate::copy_path::PathVariant;
 use crate::tab::{self, HeadingOptions};
 
 /// Default key bindings for a tab mode, in the notation of the platform this build runs on.
@@ -94,13 +95,21 @@ pub fn ctrl_key_binds(mode: &tab::Mode) -> HashMap<KeyBind, Action> {
     // App and desktop only keys
     if matches!(mode, tab::Mode::App | tab::Mode::Desktop) {
         bind!([Ctrl], Key::Character("c".into()), Copy);
-        bind!([Ctrl, Shift], Key::Character("c".into()), CopyPath);
+        key_binds.insert(
+            KeyBind {
+                modifiers: vec![Modifier::Ctrl, Modifier::Shift],
+                key: Key::Character("c".into()),
+            },
+            Action::CopyPath(PathVariant::Posix),
+        );
         bind!([Ctrl], Key::Character("x".into()), Cut);
         bind!([], Key::Named(Named::Delete), Delete);
         bind!([Shift], Key::Named(Named::Delete), PermanentlyDelete);
         bind!([Shift], Key::Named(Named::Enter), OpenInNewWindow);
         bind!([Ctrl], Key::Character("v".into()), Paste);
         bind!([], Key::Named(Named::F2), Rename);
+        bind!([Ctrl], Key::Character("z".into()), Undo);
+        bind!([Ctrl, Shift], Key::Character("z".into()), Redo);
     }
 
     // App and dialog only keys
@@ -160,8 +169,9 @@ pub fn cmd_key_binds(mode: &tab::Mode) -> HashMap<KeyBind, Action> {
     // where there is nothing to rename; the app and desktop section below rebinds it.
     bind!([], Key::Named(Named::Enter), Open);
     bind!([Super], Key::Named(Named::ArrowDown), Open);
-    // Cmd+Space belongs to Spotlight, so preview and gallery keep the keys they have elsewhere.
-    bind!([Ctrl], Key::Character(" ".into()), Preview);
+    // Finder's Get Info. Ctrl+Space, the key details have elsewhere, is macOS's input source
+    // switcher, and Cmd+Space belongs to Spotlight. Space alone opens the gallery, as Quick Look.
+    bind!([Super], Key::Character("i".into()), Preview);
     bind!([], Key::Character(" ".into()), Gallery);
 
     bind!([Super, Shift], Key::Character(".".into()), ToggleShowHidden);
@@ -196,8 +206,22 @@ pub fn cmd_key_binds(mode: &tab::Mode) -> HashMap<KeyBind, Action> {
     if matches!(mode, tab::Mode::App | tab::Mode::Desktop) {
         bind!([Super], Key::Character("c".into()), Copy);
         // Finder's Copy as Pathname.
-        bind!([Super, Alt], Key::Character("c".into()), CopyPath);
+        key_binds.insert(
+            KeyBind {
+                modifiers: vec![Modifier::Super, Modifier::Alt],
+                key: Key::Character("c".into()),
+            },
+            Action::CopyPath(PathVariant::Posix),
+        );
         bind!([Super], Key::Character("x".into()), Cut);
+        // Finder's File > Duplicate and New Folder with Selection. Elsewhere Ctrl+D adds to the
+        // sidebar, so neither has a default key there.
+        bind!([Super], Key::Character("d".into()), Duplicate);
+        bind!(
+            [Super, Ctrl],
+            Key::Character("n".into()),
+            NewFolderWithSelection
+        );
         // The key labelled Delete on a Mac keyboard reports Backspace; the one on a full size
         // keyboard reports Delete. Both trash, as they do in Finder. Neither is bound without a
         // modifier: Finder does not trash on Delete alone.
@@ -213,6 +237,8 @@ pub fn cmd_key_binds(mode: &tab::Mode) -> HashMap<KeyBind, Action> {
         bind!([Super], Key::Character("v".into()), Paste);
         bind!([], Key::Named(Named::Enter), Rename);
         bind!([], Key::Named(Named::F2), Rename);
+        bind!([Super], Key::Character("z".into()), Undo);
+        bind!([Super, Shift], Key::Character("z".into()), Redo);
     }
 
     // App and dialog only keys
@@ -596,6 +622,8 @@ fn heading_to_name(heading: &HeadingOptions) -> &'static str {
         HeadingOptions::Modified => "Modified",
         HeadingOptions::Size => "Size",
         HeadingOptions::TrashedOn => "TrashedOn",
+        HeadingOptions::Kind => "Kind",
+        HeadingOptions::DateAdded => "DateAdded",
     }
 }
 
@@ -605,6 +633,8 @@ fn heading_from_name(name: &str) -> Option<HeadingOptions> {
         "modified" => HeadingOptions::Modified,
         "size" => HeadingOptions::Size,
         "trashedon" => HeadingOptions::TrashedOn,
+        "kind" => HeadingOptions::Kind,
+        "dateadded" => HeadingOptions::DateAdded,
         _ => return None,
     })
 }
@@ -638,7 +668,13 @@ macro_rules! unit_actions {
         fn unit_action_name(action: &Action) -> Option<&'static str> {
             match action {
                 $(Action::$name => Some(stringify!($name)),)*
-                Action::RunContextAction(..) | Action::SetSort(..) | Action::ToggleSort(..) => None,
+                Action::CopyPath(..)
+                | Action::RunContextAction(..)
+                | Action::SetFolderColour(..)
+                | Action::SetSort(..)
+                | Action::ToggleSort(..) => None,
+                #[cfg(target_os = "macos")]
+                Action::ToggleTag(..) => None,
                 #[cfg(feature = "desktop")]
                 Action::ExecEntryAction(..) => None,
             }
@@ -649,9 +685,9 @@ macro_rules! unit_actions {
 unit_actions![
     About,
     AddToSidebar,
+    AirDrop,
     Compress,
     Copy,
-    CopyPath,
     CopyTo,
     Cut,
     CustomizeFolder,
@@ -660,6 +696,7 @@ unit_actions![
     CosmicSettingsWallpaper,
     DesktopViewOptions,
     Delete,
+    Duplicate,
     EditHistory,
     EditLocation,
     Eject,
@@ -680,6 +717,7 @@ unit_actions![
     MoveTo,
     NewFile,
     NewFolder,
+    NewFolderWithSelection,
     Open,
     OpenInNewTab,
     OpenInNewWindow,
@@ -700,6 +738,8 @@ unit_actions![
     SelectLast,
     SelectAll,
     Settings,
+    Share,
+    ShowPackageContents,
     TabClose,
     TabNew,
     TabNext,
@@ -709,6 +749,8 @@ unit_actions![
     ToggleFoldersFirst,
     ToggleShowHidden,
     ToggleStatusBar,
+    Undo,
+    Redo,
     WindowClose,
     WindowNew,
     ZoomDefault,
@@ -722,10 +764,15 @@ impl Action {
     pub fn config_name(&self) -> String {
         match self {
             Action::RunContextAction(index) => format!("RunContextAction({index})"),
+            Action::SetFolderColour(colour) => {
+                format!("SetFolderColour({})", colour.unwrap_or("None"))
+            }
             Action::SetSort(heading, ascending) => {
                 format!("SetSort({}, {})", heading_to_name(heading), ascending)
             }
             Action::ToggleSort(heading) => format!("ToggleSort({})", heading_to_name(heading)),
+            Action::CopyPath(PathVariant::Posix) => "CopyPath".to_string(),
+            Action::CopyPath(variant) => format!("CopyPath({})", path_variant_name(*variant)),
             #[cfg(feature = "desktop")]
             Action::ExecEntryAction(index) => format!("ExecEntryAction({index})"),
             other => unit_action_name(other).unwrap_or_default().to_string(),
@@ -735,13 +782,21 @@ impl Action {
     /// Parse an action from its configuration name, or `None` if the name is not recognized.
     pub fn from_config_name(name: &str) -> Option<Self> {
         let name = name.trim();
+        if name.eq_ignore_ascii_case("CopyPath") {
+            return Some(Action::CopyPath(PathVariant::Posix));
+        }
         if let Some((call, args)) = split_call(name) {
             return match (call, args.as_slice()) {
+                ("CopyPath", [variant]) => Some(Action::CopyPath(path_variant_from_name(variant)?)),
                 ("RunContextAction", [index]) => {
                     Some(Action::RunContextAction(index.parse().ok()?))
                 }
                 #[cfg(feature = "desktop")]
                 ("ExecEntryAction", [index]) => Some(Action::ExecEntryAction(index.parse().ok()?)),
+                ("SetFolderColour", ["None"]) => Some(Action::SetFolderColour(None)),
+                ("SetFolderColour", [colour]) => Some(Action::SetFolderColour(Some(
+                    crate::folder_look::folder_colour(colour)?.id,
+                ))),
                 ("SetSort", [heading, ascending]) => Some(Action::SetSort(
                     heading_from_name(heading)?,
                     ascending.parse().ok()?,
@@ -755,6 +810,23 @@ impl Action {
             .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
             .map(|(_, action)| *action)
     }
+}
+
+/// Configuration name of a [`PathVariant`], as written inside `CopyPath(...)`.
+fn path_variant_name(variant: PathVariant) -> &'static str {
+    match variant {
+        PathVariant::Posix => "Posix",
+        PathVariant::Tilde => "Tilde",
+        PathVariant::ShellQuoted => "ShellQuoted",
+        PathVariant::FileUrl => "FileUrl",
+        PathVariant::Name => "Name",
+    }
+}
+
+fn path_variant_from_name(name: &str) -> Option<PathVariant> {
+    PathVariant::ALL
+        .into_iter()
+        .find(|variant| path_variant_name(*variant).eq_ignore_ascii_case(name))
 }
 
 macro_rules! named_keys {
@@ -1108,8 +1180,8 @@ mod tests {
             assert_eq!(&action.config_name(), name);
             assert_eq!(Action::from_config_name(name), Some(*action));
         }
-        // 68 payload-free variants plus the four parameterized ones below.
-        assert_eq!(UNIT_ACTIONS.len(), 68);
+        // 74 payload-free variants plus the parameterized ones below.
+        assert_eq!(UNIT_ACTIONS.len(), 74);
     }
 
     #[test]
@@ -1123,6 +1195,8 @@ mod tests {
             Action::ToggleSort(HeadingOptions::TrashedOn),
             Action::SetSort(HeadingOptions::Modified, true),
             Action::SetSort(HeadingOptions::Size, false),
+            Action::ToggleSort(HeadingOptions::Kind),
+            Action::SetSort(HeadingOptions::DateAdded, false),
         ];
         #[cfg(feature = "desktop")]
         actions.push(Action::ExecEntryAction(2));
@@ -1235,6 +1309,8 @@ mod tests {
             ("Cmd+c", Action::Copy),
             ("Cmd+x", Action::Cut),
             ("Cmd+v", Action::Paste),
+            ("Cmd+d", Action::Duplicate),
+            ("Ctrl+Cmd+n", Action::NewFolderWithSelection),
             ("Cmd+a", Action::SelectAll),
             ("Cmd+q", Action::Quit),
             ("Cmd+h", Action::Hide),
@@ -1250,12 +1326,15 @@ mod tests {
             ("Cmd+n", Action::WindowNew),
             ("Cmd+t", Action::TabNew),
             ("Cmd+f", Action::SearchActivate),
+            ("Cmd+i", Action::Preview),
             ("Enter", Action::Rename),
             ("F2", Action::Rename),
             ("Cmd+=", Action::ZoomIn),
             ("Cmd++", Action::ZoomIn),
             ("Cmd+-", Action::ZoomOut),
             ("Cmd+0", Action::ZoomDefault),
+            ("Cmd+z", Action::Undo),
+            ("Cmd+Shift+z", Action::Redo),
         ] {
             assert_eq!(
                 binds.get(parse(binding).key_bind()),
@@ -1362,7 +1441,7 @@ mod tests {
         let merged = key_binds_with_overrides(&tab::Mode::App, &shortcuts);
         assert_eq!(
             merged.get(parse("Cmd+c").key_bind()),
-            Some(&Action::CopyPath)
+            Some(&Action::CopyPath(PathVariant::Posix))
         );
         assert_eq!(merged.get(parse("Cmd+w").key_bind()), None);
         assert_eq!(

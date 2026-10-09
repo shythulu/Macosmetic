@@ -455,6 +455,18 @@ fn error_text(error: &InstallError) -> String {
         InstallError::TooLarge(size) => {
             fl!("theme-install-failed-too-large", size = format_size(*size))
         }
+        InstallError::TooManyEntries(count) => {
+            fl!(
+                "theme-install-failed-too-many-entries",
+                count = count.to_string()
+            )
+        }
+        InstallError::ArchiveTooLong(count) => {
+            fl!(
+                "theme-install-failed-archive-too-long",
+                count = count.to_string()
+            )
+        }
         InstallError::UnsafeArchive(_) => fl!("theme-install-failed-unsafe"),
         InstallError::NoTheme => fl!("theme-install-failed-no-theme"),
         InstallError::Exists(id) => fl!("theme-install-failed-exists", id = id),

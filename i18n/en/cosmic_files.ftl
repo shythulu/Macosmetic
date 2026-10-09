@@ -9,6 +9,10 @@ permission-denied-description = This item cannot be opened. Grant access in Syst
 trash-needs-full-disk-access = Listing the Trash needs Full Disk Access
 open-privacy-settings = Open Privacy & Security settings
 reveal-in-finder = Reveal in Finder
+show-package-contents = Show Package Contents
+share = Share…
+airdrop = AirDrop
+tags-menu = Tags
 filesystem = Filesystem
 home = Home
 networks = Networks
@@ -16,6 +20,21 @@ notification-in-progress = File operations are in progress
 trash = Trash
 recents = Recents
 undo = Undo
+redo = Redo
+undo-action = Undo {$action}
+redo-action = Redo {$action}
+undo-kind-copy = Copy
+undo-kind-move = Move
+undo-kind-new-file = New File
+undo-kind-new-folder = New Folder
+undo-kind-rename = Rename
+undo-kind-trash = Move to Trash
+undo-refused = Can't undo {$action}: {$reason}
+redo-refused = Can't redo {$action}: {$reason}
+undo-refused-missing = {$path} is no longer there.
+undo-refused-occupied = {$path} already exists.
+undo-refused-no-folder = the folder {$path} no longer exists.
+undo-refused-not-in-trash = the items are not in the trash.
 today = Today
 
 # Desktop view options
@@ -32,6 +51,8 @@ grid-spacing = Grid spacing
 name = Name
 modified = Modified
 trashed-on = Trashed
+kind = Kind
+date-added = Date added
 size = Size
 
 # Progress footer
@@ -227,6 +248,10 @@ compressed = Compressed {$items} {$items ->
         *[other] items
     } from "{$from}" to "{$to}"
 copy_noun = Copy
+# The word Duplicate adds to a name, as Finder does: "a copy.txt", "a copy 2.txt"
+duplicate-name-suffix = copy
+# Finder's name for the folder New Folder with Selection creates
+new-folder-with-items = New Folder With Items
 pasted-image = Pasted Image
 pasted-text = Pasted Text
 pasted-video = Pasted Video
@@ -307,32 +332,64 @@ search-application = Search by app name
 show-details = Show details
 show-status-bar = Show status bar
 type = Type: {$mime}
+item-kind = Kind: {$kind}
+item-where = Where: {$path}
+item-version = Version: {$version}
 items = Items: {$items}
 item-size = Size: {$size}
+tags = Tags: {$tags}
 item-created = Created: {$created}
 item-modified = Modified: {$modified}
 item-accessed = Accessed: {$accessed}
+item-added = Date added: {$added}
 calculating = Calculating...
 checksum = {$kind} checksum
 calculate = Calculate
+not-downloaded = Not downloaded
 error = Error
 
 ## Customize folder
 customize-folder = Customize folder...
-folder-appearance = Folder appearance
+customize-this-folder = Customize this folder...
+customize-folder-title = Customize folder
 folders-selected = {$count} folders
+one-look-rule = A folder shows one look: a colour, an icon or an image.
+look-none = No custom look
+look-mixed = Mixed looks. Picking one applies it to all {$count}.
+look-colour = {$colour} folder · follows the icon theme
+look-icon-follows = {$icon} · follows the icon theme
+look-icon-pinned = {$icon} from {$theme}
+look-icon-pinned-missing = {$icon} from {$theme}, which isn't installed. Showing the current theme's icon.
+look-image = Custom image
+look-image-missing = Custom image (file missing)
+preview-list = List
+preview-sidebar = Sidebar
 folder-colour = Colour
+folder-colour-menu = Folder colour
+colour-none = None
+colour-unset = No colour
+no-coloured-folders = This icon theme has no coloured folders.
 folder-icon = Icon
-icon-set = Icon set
-icon-set-current = Current icon theme
+icons-from = Icons from
+icons-from-current = Current theme ({$theme})
+icons-follow-theme = Follows the icon theme when you change it.
+icons-pinned-to = Stays on {$theme} when you change the icon theme.
 search-icons = Search icons
 no-matching-icons = No matching icons
+icon-group-recent = Recent
+icon-group-places = Places
+icon-group-purpose = Purpose
+icons-shown = Showing {$shown} of {$total}. Search to narrow the list.
+browse-icon-themes = Browse icon themes
 folder-image = Image
+use-own-picture = Use your own picture
 choose-image = Choose image
 browse = Browse...
+change = Change...
 choose = Choose
 images = Images
-reset-folder-appearance = Reset to default
+clear = Clear
+icon-default-folder = Default folder
 colour-red = Red
 colour-orange = Orange
 colour-yellow = Yellow
@@ -346,8 +403,18 @@ colour-grey = Grey
 
 ## Settings
 settings = Settings
+context-menu = Context menu
+context-quick-bar = Show quick actions in context menus
 single-click = Single click to open
 show-recents = Recents folder in the sidebar
+
+### Opening folders (macOS)
+folder-opener = Opening folders
+use-for-folders = Use Macosmetic to open folders
+folders-open-in = Folders from the Dock, Spotlight and other apps open in {$app}.
+folder-opener-not-bundled = Only available when running from the app bundle. Finder keeps opening folders.
+folder-opener-unknown = No application is set to open folders.
+folder-opener-failed = The change was refused: {$error}
 
 ### Appearance
 appearance = Appearance
@@ -383,6 +450,8 @@ theme-install-failed-network = Could not reach {$host}. Check your connection an
 theme-install-failed-moved = The download link has moved. This will be fixed in an app update.
 theme-install-failed-checksum = The download does not match the catalog. Try again after the next app update.
 theme-install-failed-too-large = The archive is larger than the app allows ({$size}).
+theme-install-failed-too-many-entries = The theme has more files than the app allows ({$count}).
+theme-install-failed-archive-too-long = The archive has more entries than the app will read ({$count}).
 theme-install-failed-unsafe = The archive contains unsafe paths and was not installed.
 theme-install-failed-no-theme = No icon theme was found in this file.
 theme-install-failed-exists = A theme named {$id} is already installed outside the app. Remove it first.
@@ -415,6 +484,8 @@ sort-by-name = Sort by name
 sort-by-modified = Sort by modified
 sort-by-size = Sort by size
 sort-by-trashed = Sort by delete time
+sort-by-kind = Sort by kind
+sort-by-date-added = Sort by date added
 remove-from-recents = Remove from recents
 
 ## Desktop
@@ -438,6 +509,17 @@ edit = Edit
 cut = Cut
 copy = Copy
 copy-path = Copy path
+copy-path-as = Copy path as
+copy-path-posix = POSIX path
+copy-path-tilde = Path with ~
+copy-path-shell-quoted = Shell-quoted path
+copy-path-file-url = file:// URL
+copy-path-name = Name
+duplicate = Duplicate
+new-folder-with-selection = New folder with selection ({$items} {$items ->
+        [one] item
+        *[other] items
+    })
 paste = Paste
 select-all = Select all
 
@@ -475,3 +557,7 @@ status-bytes = {$count} {$count ->
     [one] byte
     *[other] bytes
   }
+
+sort-kind = Kind
+sort-date-added-newest-first = Date added, newest first
+sort-date-added-oldest-first = Date added, oldest first

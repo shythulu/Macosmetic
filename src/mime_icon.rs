@@ -100,7 +100,15 @@ pub fn mime_for_path(
     // `xdg-mime-rs` sets the guess to uncertain if it returns special mime types.
     // The guess could also be uncertain on platforms without shared-mime-info.
     // Try mime_guess, but only if it is not one of the special mime types.
-    if guess.uncertain() && (remote || !is_special_mime(guessed_mime)) {
+    // With `remote` set no data is read. When the name maps to more than one type, as
+    // `*.png` does to image/png and image/apng, xdg-mime sniffs the empty data and returns a
+    // certain `application/x-zerosize`. That is not an answer, so fall back to the name.
+    // macOS marks dataless files and network mounts remote, so this is common there.
+    let empty_sniff = cfg!(target_os = "macos")
+        && remote
+        && *guessed_mime == "application/x-zerosize"
+        && metadata_opt.is_none_or(|m| m.len() > 0);
+    if empty_sniff || (guess.uncertain() && (remote || !is_special_mime(guessed_mime))) {
         // If uncertain, try mime_guess. This could happen on platforms without shared-mime-info
         mime_guess::from_path(path).first_or_octet_stream()
     } else {

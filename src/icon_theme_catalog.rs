@@ -278,6 +278,10 @@ pub enum InstallError {
     Moved,
     /// The download or the unpacked theme passed the cap, in bytes.
     TooLarge(u64),
+    /// The themes being installed hold more entries than the cap.
+    TooManyEntries(usize),
+    /// The archive holds more entries than the app will read through, wanted or not.
+    ArchiveTooLong(usize),
     Checksum,
     /// A local archive had this many entries that were not safe to unpack.
     UnsafeArchive(usize),
@@ -309,6 +313,10 @@ impl fmt::Display for InstallError {
             Self::Network { host, detail } => write!(f, "could not reach {host}: {detail}"),
             Self::Moved => f.write_str("the download link has moved"),
             Self::TooLarge(size) => write!(f, "larger than the {size} byte cap"),
+            Self::TooManyEntries(count) => write!(f, "more than the {count} entry cap"),
+            Self::ArchiveTooLong(count) => {
+                write!(f, "archive has more than the {count} entry scan cap")
+            }
             Self::Checksum => f.write_str("checksum mismatch"),
             Self::UnsafeArchive(count) => write!(f, "{count} unsafe entries"),
             Self::NoTheme => f.write_str("no icon theme found"),
@@ -604,16 +612,23 @@ pub struct ExtractTarget {
 /// Caps on what one archive may unpack to. A crafted archive past either is refused whole.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
+    /// Bytes written into the requested themes.
     pub max_bytes: u64,
+    /// Entries written into the requested themes.
     pub max_entries: usize,
+    /// Entries read from the archive, including those for themes not being installed, so a
+    /// hostile archive cannot keep the reader busy forever.
+    pub max_scanned: usize,
 }
 
 impl Default for Limits {
-    /// Papirus, the largest catalog theme, unpacks to about 300 MB and 42 000 entries.
+    /// Papirus, the largest catalog theme, unpacks to about 300 MB and 42 000 entries. The
+    /// Flat Remix archive holds about 374 000 entries across its themes, about 20 000 each.
     fn default() -> Self {
         Self {
             max_bytes: 1_500_000_000,
             max_entries: 250_000,
+            max_scanned: 2_000_000,
         }
     }
 }
@@ -703,6 +718,9 @@ struct Extractor<'a> {
     limits: &'a Limits,
     stats: ExtractStats,
     written: Vec<Written>,
+    /// Entries read from the archive, wanted or not.
+    scanned: usize,
+    /// Entries that belong to a requested theme.
     entries: usize,
     bytes: u64,
 }
@@ -715,6 +733,7 @@ impl<'a> Extractor<'a> {
             limits,
             stats: ExtractStats::default(),
             written: targets.iter().map(|_| Written::default()).collect(),
+            scanned: 0,
             entries: 0,
             bytes: 0,
         }
@@ -727,9 +746,9 @@ impl<'a> Extractor<'a> {
         size: u64,
         reader: &mut dyn Read,
     ) -> Result<(), InstallError> {
-        self.entries += 1;
-        if self.entries > self.limits.max_entries {
-            return Err(InstallError::TooLarge(self.limits.max_bytes));
+        self.scanned += 1;
+        if self.scanned > self.limits.max_scanned {
+            return Err(InstallError::ArchiveTooLong(self.limits.max_scanned));
         }
         let Some(path) = normal_path(path) else {
             self.stats.rejected += 1;
@@ -757,6 +776,10 @@ impl<'a> Extractor<'a> {
         let Some((index, relative)) = placement else {
             return Ok(());
         };
+        self.entries += 1;
+        if self.entries > self.limits.max_entries {
+            return Err(InstallError::TooManyEntries(self.limits.max_entries));
+        }
 
         let lower = relative.to_lowercase();
         let out = self.dest.join(&self.targets[index].id).join(&relative);
@@ -1030,8 +1053,9 @@ impl Source {
         let mut count = 0;
         self.entries(&mut |path, kind, _size, _reader| {
             count += 1;
-            if count > Limits::default().max_entries {
-                return Err(InstallError::TooLarge(Limits::default().max_bytes));
+            let max_scanned = Limits::default().max_scanned;
+            if count > max_scanned {
+                return Err(InstallError::ArchiveTooLong(max_scanned));
             }
             let Some(path) = normal_path(path) else {
                 return Ok(());
@@ -1488,10 +1512,11 @@ mod tests {
         let few = Limits {
             max_bytes: 1_000,
             max_entries: 3,
+            max_scanned: 100,
         };
         assert_eq!(
             extract(&data[..], &[target("T", "T")], dest.path(), &few).unwrap_err(),
-            InstallError::TooLarge(1_000)
+            InstallError::TooManyEntries(3)
         );
 
         let mut builder = tar::Builder::new(Vec::new());
@@ -1502,6 +1527,47 @@ mod tests {
             InstallError::TooLarge(1_000)
         );
         assert!(extract(&data[..], &[target("T", "T")], dest.path(), &limits()).is_ok());
+    }
+
+    #[test]
+    fn extract_counts_only_entries_of_the_requested_themes() {
+        let mut builder = tar::Builder::new(Vec::new());
+        for n in 0..50 {
+            add_file(&mut builder, &format!("Other/{n}.svg"), b"<svg/>");
+        }
+        add_file(&mut builder, "T/index.theme", b"[Icon Theme]");
+        add_file(&mut builder, "T/a.svg", b"<svg/>");
+        let data = builder.into_inner().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let limits = Limits {
+            max_bytes: 1_000,
+            max_entries: 3,
+            max_scanned: 100,
+        };
+        let stats = extract(&data[..], &[target("T", "T")], dest.path(), &limits).unwrap();
+        assert_eq!(stats.files, 2);
+        assert!(dest.path().join("T/a.svg").is_file());
+        assert!(!dest.path().join("Other").exists());
+    }
+
+    #[test]
+    fn extract_refuses_an_archive_past_the_scan_cap() {
+        let mut builder = tar::Builder::new(Vec::new());
+        add_file(&mut builder, "T/index.theme", b"[Icon Theme]");
+        for n in 0..20 {
+            add_file(&mut builder, &format!("Other/{n}.svg"), b"");
+        }
+        let data = builder.into_inner().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let limits = Limits {
+            max_bytes: 1_000,
+            max_entries: 100,
+            max_scanned: 10,
+        };
+        assert_eq!(
+            extract(&data[..], &[target("T", "T")], dest.path(), &limits).unwrap_err(),
+            InstallError::ArchiveTooLong(10)
+        );
     }
 
     #[test]

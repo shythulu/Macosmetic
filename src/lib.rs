@@ -20,9 +20,17 @@ pub mod channel;
 pub mod clipboard;
 pub mod config;
 mod context_action;
+mod copy_path;
+#[cfg(target_os = "macos")]
+mod copyfile_macos;
 pub mod dialog;
+mod duplicate;
 mod folder_appearance;
 pub mod folder_look;
+#[cfg(target_os = "macos")]
+pub(crate) mod folder_opener_macos;
+#[cfg(target_os = "macos")]
+mod fs_flags_macos;
 mod gesture;
 #[cfg(target_os = "macos")]
 pub(crate) mod gesture_macos;
@@ -43,12 +51,28 @@ mod mouse_area;
 pub mod operation;
 #[cfg(all(target_os = "macos", feature = "quicklook"))]
 pub(crate) mod quicklook_macos;
+#[cfg(target_os = "macos")]
+mod share_macos;
+mod quick_bar;
 mod spawn_detached;
+#[cfg(target_os = "macos")]
+pub(crate) mod spotlight_macos;
 mod status_bar;
 pub mod tab;
+pub mod tags;
+#[cfg(target_os = "macos")]
+pub(crate) mod tags_macos;
+mod theme_catalog;
 mod thumbnail_cacher;
 mod thumbnailer;
 pub(crate) mod trash;
+#[cfg(target_os = "macos")]
+pub(crate) mod trash_macos;
+#[cfg(target_os = "macos")]
+pub(crate) mod url_values_macos;
+#[cfg(target_os = "macos")]
+pub(crate) mod workspace_macos;
+mod undo;
 mod zoom;
 
 pub(crate) type FxOrderMap<K, V> = ordermap::OrderMap<K, V, rustc_hash::FxBuildHasher>;
@@ -168,6 +192,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Closing the last window leaves the application in the Dock; this is how it hears
         // about the click that asks for a window back.
         appkit_macos::watch_activation();
+        // The folders the Dock, Spotlight and `open` hand this application, including the one
+        // this process may have been launched for.
+        appkit_macos::watch_open_documents();
     }
 
     #[cfg(target_os = "macos")]

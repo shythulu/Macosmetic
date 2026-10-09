@@ -27,6 +27,9 @@ notify-rust = { version = "4", optional = true }
 open = "5.3.4"
 paste = "1.0"
 regex = "1"
+# Theme files are RON. Matches the version cosmic-theme itself uses, so no second copy
+# of the parser enters the tree.
+ron = "0.12"
 rustc-hash = "2.1"
 serde = { version = "1", features = ["serde_derive"] }
 serde_json = "1"
@@ -116,10 +119,7 @@ jemalloc = ["dep:tikv-jemallocator"]
 notify = ["dep:notify-rust"]
 # macOS Quick Look previews. No effect on other platforms: every dependency it enables is
 # declared only for macOS, so the feature resolves to nothing elsewhere.
-quicklook = [
-    "dep:objc2-quick-look-thumbnailing",
-    "dep:objc2-uniform-type-identifiers",
-]
+quicklook = ["dep:objc2-quick-look-thumbnailing"]
 wayland = ["libcosmic/wayland", "dep:cctk", "dep:wayland-client"]
 wgpu = ["libcosmic/wgpu"]
 
@@ -145,26 +145,54 @@ block2 = "0.6"
 objc2 = "0.6"
 # Trackpad gestures come from an NSEvent monitor (see src/gesture_macos.rs); the window colour
 # space is set through NSView/NSWindow, and the application lifecycle goes through
-# NSApplication and NSNotificationCenter (see src/appkit_macos.rs).
+# NSApplication and NSNotificationCenter (see src/appkit_macos.rs). Open With asks
+# LaunchServices through NSWorkspace and renders app icons with NSImage (see
+# src/workspace_macos.rs). Volumes are listed and ejected through NSWorkspace (see
+# src/mounter/macos.rs). The default folder opener is read and set through NSWorkspace
+# with a UTType (see src/folder_opener_macos.rs).
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "bitflags",
     "block2",
     "objc2-core-foundation",
+    "objc2-uniform-type-identifiers",
     "NSApplication",
+    "NSBitmapImageRep",
     "NSColorSpace",
     "NSEvent",
+    "NSImage",
+    "NSImageRep",
     "NSMenu",
     "NSMenuItem",
     "NSResponder",
+    # The share menu and AirDrop (src/share_macos.rs).
+    "NSSharingService",
     "NSView",
     "NSWindow",
+    # The Finder icon of an app, which Quick Look declines to render (src/quicklook_macos.rs).
+    "objc2-core-graphics",
+    "NSGraphicsContext",
+    "NSWorkspace",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "block2",
+    # The `odoc` Apple Event folders arrive in when another object holds the application
+    # delegate (src/appkit_macos.rs).
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    # Resource values read at scan time (src/url_values_macos.rs).
+    "NSArray",
+    # Get Info: an app's version (src/url_values_macos.rs), and the bundle this process runs
+    # from, for the default folder opener.
+    "NSBundle",
+    "NSData",
+    "NSDate",
     "NSDictionary",
+    "NSEnumerator",
     "NSError",
+    # Move to Trash without Finder (src/trash_macos.rs).
+    "NSFileManager",
     "NSGeometry",
     # The system language a Finder launch does not pass in (src/launch_macos.rs).
     "NSLocale",
@@ -174,9 +202,21 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSString",
     "NSURL",
     "NSUserDefaults",
-    # NSNumber, for the volume free space the status bar reads (src/status_bar.rs).
+    # NSNumber, for the volume free space the status bar reads (src/status_bar.rs),
+    # volume names and ejectability (src/mounter/macos.rs), and boolean NSURL
+    # resource values (src/url_values_macos.rs).
     "NSValue",
 ] }
+# Recents from Spotlight (src/spotlight_macos.rs): the MDQuery results are CF objects.
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "CFArray",
+    "CFBase",
+    "CFDate",
+    "CFString",
+] }
+# Finder tags are a binary plist in an extended attribute (src/tags.rs).
+plist = { version = "1", default-features = false }
 objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = [
     "std",
     "bitflags",
@@ -186,11 +226,15 @@ objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, fea
     "QLThumbnailGenerationRequest",
     "QLThumbnailGenerator",
 ], optional = true }
+# MIME types become UTTypes for the LaunchServices lookups (src/workspace_macos.rs),
+# UTTypePNG for Quick Look thumbnails and UTTypeFolder for the default folder opener.
 objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = [
     "std",
     "UTCoreTypes",
     "UTType",
-], optional = true }
+] }
+# The Put Back journal (src/trash_macos.rs).
+serde_json = "1"
 
 [build-dependencies]
 xdgen = "0.1"
@@ -199,11 +243,21 @@ xdgen = "0.1"
 # cap-std = "3"
 # cap-tempfile = "3"
 fastrand = "2"
+# Round-trips the saved state the way cosmic-config stores it.
+ron = "0.12"
 test-log = "0.2"
 tokio = { version = "1", features = ["rt", "macros"] }
 
 # [patch.'https://github.com/pop-os/cosmic-text']
 # cosmic-text = { path = "../cosmic-text" }
+
+# Vendored copy of pop-os/window_clipboard at the revision the lock pinned (f68595e,
+# tag sctk-0.20) with a working macOS `DndProvider`. Upstream's macOS backend is an
+# empty stub, so no drag and drop reaches iced there. See vendor/window_clipboard/MACOSMETIC.md.
+[patch.'https://github.com/pop-os/window_clipboard']
+window_clipboard = { path = "vendor/window_clipboard" }
+dnd = { path = "vendor/window_clipboard/dnd" }
+mime = { path = "vendor/window_clipboard/mime" }
 
 # Fork of pop-os/libcosmic with the macOS patches this port needs (icon theme
 # lookup on macOS). Branch `macosmetic` sits on the upstream revision the lock
