@@ -48,6 +48,33 @@ impl MenuAction for TabAction {
     }
 }
 
+/// Date Added comes from `NSURLAddedToDirectoryDateKey`. Other platforms record no such
+/// date, so the option is not offered there.
+const SORT_BY_DATE_ADDED: bool = cfg!(target_os = "macos");
+
+/// The Date Added entries of a view menu: none in the Trash, which has its own date, or
+/// where the platform records no such date.
+fn date_added_items<T>(
+    in_trash: bool,
+    sort_item: &impl Fn(String, tab::HeadingOptions, bool) -> T,
+) -> Vec<T> {
+    if in_trash || !SORT_BY_DATE_ADDED {
+        return Vec::new();
+    }
+    vec![
+        sort_item(
+            fl!("sort-date-added-newest-first"),
+            tab::HeadingOptions::DateAdded,
+            false,
+        ),
+        sort_item(
+            fl!("sort-date-added-oldest-first"),
+            tab::HeadingOptions::DateAdded,
+            true,
+        ),
+    ]
+}
+
 pub fn context_menu<'a>(
     tab: &Tab,
     key_binds: &HashMap<KeyBind, Action>,
@@ -321,6 +348,13 @@ pub fn context_menu<'a>(
                 children.push(sort_item(fl!("sort-by-name"), HeadingOptions::Name));
                 children.push(sort_item(fl!("sort-by-modified"), HeadingOptions::Modified));
                 children.push(sort_item(fl!("sort-by-size"), HeadingOptions::Size));
+                children.push(sort_item(fl!("sort-by-kind"), HeadingOptions::Kind));
+                if SORT_BY_DATE_ADDED {
+                    children.push(sort_item(
+                        fl!("sort-by-date-added"),
+                        HeadingOptions::DateAdded,
+                    ));
+                }
                 if matches!(tab.location, Location::Desktop(..)) {
                     children.push(menu::Item::Divider);
                     children.push(menu_item(
@@ -364,6 +398,13 @@ pub fn context_menu<'a>(
                 children.push(sort_item(fl!("sort-by-name"), HeadingOptions::Name));
                 children.push(sort_item(fl!("sort-by-modified"), HeadingOptions::Modified));
                 children.push(sort_item(fl!("sort-by-size"), HeadingOptions::Size));
+                children.push(sort_item(fl!("sort-by-kind"), HeadingOptions::Kind));
+                if SORT_BY_DATE_ADDED {
+                    children.push(sort_item(
+                        fl!("sort-by-date-added"),
+                        HeadingOptions::DateAdded,
+                    ));
+                }
             }
         }
         (_, Location::Network(..)) => {
@@ -515,8 +556,11 @@ pub fn dialog_menu(
                         tab::HeadingOptions::Size,
                         false,
                     ),
-                    //TODO: sort by type
-                ],
+                    sort_item(fl!("sort-kind"), tab::HeadingOptions::Kind, true),
+                ]
+                .into_iter()
+                .chain(date_added_items(in_trash, &sort_item))
+                .collect(),
             ),
         ),
         menu::Tree::with_children(
@@ -758,8 +802,11 @@ pub fn menu_bar<'a>(
                             tab::HeadingOptions::Size,
                             false,
                         ),
-                        //TODO: sort by type
-                    ],
+                        sort_item(fl!("sort-kind"), tab::HeadingOptions::Kind, true),
+                    ]
+                    .into_iter()
+                    .chain(date_added_items(in_trash, &sort_item))
+                    .collect(),
                 ),
             ],
         )
