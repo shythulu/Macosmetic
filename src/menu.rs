@@ -342,7 +342,9 @@ pub fn context_menu<'a>(
                         children.push(menu_item(fl!("add-to-sidebar"), Action::AddToSidebar));
                     }
                     children.push(menu::Item::Divider);
-                    if tab.location.is_recents() {
+                    // On macOS, Recents is Spotlight's history, which this app cannot
+                    // edit, so there is no "Remove from recents".
+                    if tab.location.is_recents() && cfg!(not(target_os = "macos")) {
                         children.push(menu_item(
                             fl!("remove-from-recents"),
                             Action::RemoveFromRecents,

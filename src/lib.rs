@@ -48,6 +48,8 @@ pub mod operation;
 #[cfg(all(target_os = "macos", feature = "quicklook"))]
 pub(crate) mod quicklook_macos;
 mod spawn_detached;
+#[cfg(target_os = "macos")]
+pub(crate) mod spotlight_macos;
 mod status_bar;
 pub mod tab;
 mod thumbnail_cacher;

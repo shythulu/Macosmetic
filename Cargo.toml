@@ -194,6 +194,14 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     # resource values (src/url_values_macos.rs).
     "NSValue",
 ] }
+# Recents from Spotlight (src/spotlight_macos.rs): the MDQuery results are CF objects.
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "CFArray",
+    "CFBase",
+    "CFDate",
+    "CFString",
+] }
 objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = [
     "std",
     "bitflags",
