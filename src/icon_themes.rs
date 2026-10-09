@@ -222,6 +222,121 @@ fn without_colour_variants(names: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// Known folder icon names with a friendly label and the extra words a search should
+/// match. Labels here are not translated: they derive from the pack's own names.
+///
+/// `folder` is special-cased in [`icon_label`], since "Default folder" is translated.
+const KNOWN_ICONS: &[(&str, &str, &[&str])] = &[
+    ("folder", "", &["plain", "default"]),
+    ("folder-documents", "Documents", &["docs"]),
+    ("folder-download", "Downloads", &["downloads"]),
+    ("folder-downloads", "Downloads", &[]),
+    ("folder-music", "Music", &["audio"]),
+    ("folder-pictures", "Pictures", &["photos", "images"]),
+    ("folder-videos", "Videos", &["movies"]),
+    ("folder-publicshare", "Public", &["shared"]),
+    ("folder-public", "Public", &["shared"]),
+    ("folder-templates", "Templates", &[]),
+    ("folder-desktop", "Desktop", &[]),
+    ("user-desktop", "Desktop", &[]),
+    ("user-home", "Home", &[]),
+    ("folder-git", "Git", &["repo", "source"]),
+    ("folder-github", "GitHub", &["repo", "source"]),
+    (
+        "folder-development",
+        "Code",
+        &["dev", "programming", "source"],
+    ),
+    ("folder-code", "Code", &["dev", "programming", "source"]),
+    ("folder-projects", "Projects", &["work"]),
+    ("folder-games", "Games", &[]),
+    ("folder-cloud", "Cloud", &["sync"]),
+    ("folder-dropbox", "Dropbox", &["sync"]),
+    ("folder-google-drive", "Google Drive", &["sync"]),
+    ("folder-locked", "Locked", &["private", "secure"]),
+    ("folder-favorites", "Favourites", &["starred"]),
+    ("folder-important", "Important", &["urgent"]),
+    ("folder-recent", "Recent", &[]),
+    ("folder-script", "Scripts", &["shell"]),
+];
+
+fn known_icon(
+    name: &str,
+) -> Option<&'static (&'static str, &'static str, &'static [&'static str])> {
+    KNOWN_ICONS.iter().find(|(known, ..)| *known == name)
+}
+
+/// A readable label for a folder icon name: `folder-git` is "Git", `folder-publicshare`
+/// is "Public". Unknown names lose their `folder-` or `user-` prefix, get spaces for
+/// dashes and underscores, and a capital first letter.
+pub fn icon_label(name: &str) -> String {
+    if name == "folder" {
+        return crate::fl!("icon-default-folder");
+    }
+    if let Some((_, label, _)) = known_icon(name) {
+        return (*label).to_string();
+    }
+    let rest = ["folder-", "folder_", "user-"]
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))
+        .unwrap_or(name);
+    let words = rest.replace(['-', '_'], " ");
+    let mut chars = words.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => name.to_string(),
+    }
+}
+
+/// Words besides the label and the raw name that a search for this icon should match.
+pub fn icon_search_terms(name: &str) -> &'static [&'static str] {
+    known_icon(name).map_or(&[], |(_, _, terms)| terms)
+}
+
+/// Whether `name` matches a lower-case search, on its label, raw name or synonyms.
+pub fn icon_matches(name: &str, label: &str, search: &str) -> bool {
+    search.is_empty()
+        || name.to_lowercase().contains(search)
+        || label.to_lowercase().contains(search)
+        || icon_search_terms(name)
+            .iter()
+            .any(|term| term.contains(search))
+}
+
+/// Where an icon sits in the drawer's grid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IconGroup {
+    /// The plain folder, the XDG user directories and `user-*`.
+    Places,
+    /// Everything else: what a folder is for.
+    Purpose,
+}
+
+pub fn icon_group(name: &str) -> IconGroup {
+    const XDG_KINDS: &[&str] = &[
+        "documents",
+        "download",
+        "downloads",
+        "music",
+        "pictures",
+        "videos",
+        "publicshare",
+        "public",
+        "templates",
+        "desktop",
+    ];
+    let is_place = name == "folder"
+        || name.starts_with("user-")
+        || name
+            .strip_prefix("folder-")
+            .is_some_and(|kind| XDG_KINDS.contains(&kind));
+    if is_place {
+        IconGroup::Places
+    } else {
+        IconGroup::Purpose
+    }
+}
+
 fn is_folder_look_name(name: &str) -> bool {
     let folder_like = name == "folder"
         || name.starts_with("folder-")
@@ -348,6 +463,53 @@ mod tests {
                 "folder-redhat"
             ]
         );
+    }
+
+    #[test]
+    fn icon_labels_are_friendly() {
+        assert_eq!(icon_label("folder-git"), "Git");
+        assert_eq!(icon_label("folder-publicshare"), "Public");
+        assert_eq!(icon_label("folder-google-drive"), "Google Drive");
+        assert_eq!(icon_label("user-home"), "Home");
+        // Unknown names: strip the prefix, space the words, capitalise.
+        assert_eq!(icon_label("folder-visual-studio"), "Visual studio");
+        assert_eq!(icon_label("folder_snap"), "Snap");
+        assert_eq!(icon_label("user-trash-full"), "Trash full");
+        assert_eq!(icon_label("something"), "Something");
+        assert!(!icon_label("folder").is_empty());
+    }
+
+    #[test]
+    fn icon_search_matches_label_name_and_synonyms() {
+        assert_eq!(
+            icon_search_terms("folder-development"),
+            ["dev", "programming", "source"]
+        );
+        assert!(icon_search_terms("folder-whatever").is_empty());
+        let label = icon_label("folder-development");
+        assert!(icon_matches("folder-development", &label, "code"));
+        assert!(icon_matches("folder-development", &label, "develop"));
+        assert!(icon_matches("folder-development", &label, "programming"));
+        assert!(icon_matches("folder-development", &label, ""));
+        assert!(!icon_matches("folder-development", &label, "music"));
+        assert!(icon_matches("folder-publicshare", "Public", "shared"));
+    }
+
+    #[test]
+    fn icon_groups_split_places_from_purpose() {
+        for name in [
+            "folder",
+            "folder-documents",
+            "folder-download",
+            "folder-publicshare",
+            "user-home",
+            "user-desktop",
+        ] {
+            assert_eq!(icon_group(name), IconGroup::Places, "{name}");
+        }
+        for name in ["folder-git", "folder-code", "folder-red", "folder-games"] {
+            assert_eq!(icon_group(name), IconGroup::Purpose, "{name}");
+        }
     }
 
     #[test]
