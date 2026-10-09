@@ -679,6 +679,7 @@ macro_rules! unit_actions {
 unit_actions![
     About,
     AddToSidebar,
+    AirDrop,
     Compress,
     Copy,
     CopyTo,
@@ -731,6 +732,7 @@ unit_actions![
     SelectLast,
     SelectAll,
     Settings,
+    Share,
     ShowPackageContents,
     TabClose,
     TabNew,
@@ -1170,8 +1172,8 @@ mod tests {
             assert_eq!(&action.config_name(), name);
             assert_eq!(Action::from_config_name(name), Some(*action));
         }
-        // 70 payload-free variants plus the parameterized ones below.
-        assert_eq!(UNIT_ACTIONS.len(), 70);
+        // 72 payload-free variants plus the parameterized ones below.
+        assert_eq!(UNIT_ACTIONS.len(), 72);
     }
 
     #[test]

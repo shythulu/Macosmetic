@@ -194,6 +194,7 @@ pub fn open_trash_command(exe: &Path) -> process::Command {
 pub enum Action {
     About,
     AddToSidebar,
+    AirDrop,
     Compress,
     Copy,
     CopyPath(PathVariant),
@@ -253,6 +254,7 @@ pub enum Action {
     SetFolderColour(Option<&'static str>),
     SetSort(HeadingOptions, bool),
     Settings,
+    Share,
     ShowPackageContents,
     TabClose,
     TabNew,
@@ -277,6 +279,7 @@ impl Action {
         match self {
             Self::About => Message::ToggleContextPage(ContextPage::About),
             Self::AddToSidebar => Message::AddToSidebar(entity_opt),
+            Self::AirDrop => Message::Share(entity_opt, ShareVia::AirDrop),
             Self::Compress => Message::Compress(entity_opt),
             Self::Copy => Message::Copy(entity_opt),
             Self::CopyPath(variant) => Message::CopyPath(entity_opt, *variant),
@@ -344,6 +347,7 @@ impl Action {
             Self::ShowPackageContents => {
                 Message::TabMessage(entity_opt, tab::Message::ShowPackageContents)
             }
+            Self::Share => Message::Share(entity_opt, ShareVia::Picker),
             Self::TabClose => Message::TabClose(entity_opt),
             Self::TabNew => Message::TabNew,
             Self::TabNext => Message::TabNext,
@@ -412,6 +416,15 @@ impl MenuAction for NavMenuAction {
     fn message(&self) -> Self::Message {
         cosmic::Action::App(Message::NavMenuAction(*self))
     }
+}
+
+/// Where [`Message::Share`] sends the selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShareVia {
+    /// The system share menu, with every service that can take the items.
+    Picker,
+    /// Straight to AirDrop.
+    AirDrop,
 }
 
 /// Messages that are used specifically by our [`App`].
@@ -568,6 +581,8 @@ pub enum Message {
     SetShowRecents(bool),
     SetTypeToSearch(TypeToSearch),
     StatusBar(status_bar::Message),
+    /// Share the selected items through the system share menu or AirDrop. macOS only.
+    Share(Option<Entity>, ShareVia),
     SystemThemeModeChange,
     Size(window::Id, Size),
     /// A window reported how many physical pixels it draws per logical pixel.
@@ -5138,6 +5153,23 @@ impl Application for App {
                 for path in paths {
                     tab::reveal_in_finder(&path);
                 }
+            }
+            Message::Share(entity_opt, via) => {
+                let paths: Vec<_> = self.selected_paths(entity_opt).collect();
+                let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                let window_id = self
+                    .tab_model
+                    .data::<Tab>(entity)
+                    .and_then(|tab| self.tab_window_id(tab));
+                #[cfg(target_os = "macos")]
+                if let Some(window_id) = window_id {
+                    return match via {
+                        ShareVia::Picker => crate::share_macos::show_picker(window_id, paths),
+                        ShareVia::AirDrop => crate::share_macos::send_via_airdrop(window_id, paths),
+                    };
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = (paths, window_id, via);
             }
             Message::RestoreFromTrash(entity_opt) => {
                 let mut trash_items = Vec::new();
