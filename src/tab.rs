@@ -7697,6 +7697,7 @@ impl Tab {
         size: Size,
         clipboard_paste_available: bool,
         context_actions: &'a [ContextActionPreset],
+        context_quick_bar: bool,
     ) -> Element<'a, Message> {
         // Update cached size
         self.size_opt.set(Some(size));
@@ -7800,6 +7801,7 @@ impl Tab {
                 modifiers,
                 clipboard_paste_available,
                 context_actions,
+                context_quick_bar,
             )),
         )
         .item_width(cosmic::widget::menu::ItemWidth::Uniform(360))
@@ -8178,6 +8180,7 @@ impl Tab {
         modifiers: &'a Modifiers,
         clipboard_paste_available: bool,
         context_actions: &'a [ContextActionPreset],
+        context_quick_bar: bool,
     ) -> Element<'a, Message> {
         widget::responsive(move |size| {
             widget::id_container(
@@ -8187,6 +8190,7 @@ impl Tab {
                     size,
                     clipboard_paste_available,
                     context_actions,
+                    context_quick_bar,
                 ),
                 Id::new(format!(
                     "tab-{}-{}",
