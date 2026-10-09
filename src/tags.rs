@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Finder tags, read only.
+//! Finder tags: the model and the read path.
 //!
 //! Finder keeps a file's tags in the `com.apple.metadata:_kMDItemUserTags` extended attribute.
 //! The value is a binary plist array of strings. Each string is `Name\nN`, where `N` is the
@@ -11,7 +11,7 @@
 //! cannot be parsed, it falls back to `NSURLTagNamesKey`, which gives names only. Tags are read
 //! at scan time on local volumes only, so a change made in Finder shows after a reload.
 //!
-//! Nothing here writes tags. On other platforms [`read`] returns no tags.
+//! Writing lives in `tags_macos`. On other platforms [`read`] returns no tags.
 
 use std::fs::Metadata;
 use std::path::Path;
@@ -42,6 +42,20 @@ impl TagColour {
             6 => Self::Red,
             7 => Self::Orange,
             _ => Self::None,
+        }
+    }
+
+    /// Finder's stored index for this colour, the inverse of [`Self::from_index`].
+    pub fn index(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Grey => 1,
+            Self::Green => 2,
+            Self::Purple => 3,
+            Self::Blue => 4,
+            Self::Yellow => 5,
+            Self::Red => 6,
+            Self::Orange => 7,
         }
     }
 
@@ -113,7 +127,7 @@ pub fn dot_colours(tags: &[Tag], max: usize) -> impl Iterator<Item = TagColour> 
 }
 
 #[cfg(target_os = "macos")]
-const TAGS_XATTR: &std::ffi::CStr = c"com.apple.metadata:_kMDItemUserTags";
+pub(crate) const TAGS_XATTR: &std::ffi::CStr = c"com.apple.metadata:_kMDItemUserTags";
 
 /// Parses the tags attribute. `None` if it is not a plist array of strings.
 #[cfg(target_os = "macos")]
@@ -128,14 +142,14 @@ pub fn parse_xattr(bytes: &[u8]) -> Option<Vec<Tag>> {
 
 /// What the tags attribute read found.
 #[cfg(target_os = "macos")]
-enum Xattr {
+pub(crate) enum Xattr {
     Absent,
     Present(Vec<u8>),
     Failed,
 }
 
 #[cfg(target_os = "macos")]
-fn read_xattr(path: &Path) -> Xattr {
+pub(crate) fn read_xattr(path: &Path) -> Xattr {
     use std::os::unix::ffi::OsStrExt;
 
     let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
@@ -261,6 +275,7 @@ mod tests {
         ];
         for (index, colour) in expected.into_iter().enumerate() {
             assert_eq!(TagColour::from_index(index as u8), colour);
+            assert_eq!(colour.index(), index as u8);
         }
         assert_eq!(TagColour::from_index(8), TagColour::None);
         assert_eq!(TagColour::None.rgb(), None);

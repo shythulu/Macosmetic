@@ -12,6 +12,7 @@ reveal-in-finder = Reveal in Finder
 show-package-contents = Show Package Contents
 share = Share…
 airdrop = AirDrop
+tags-menu = Tags
 filesystem = Filesystem
 home = Home
 networks = Networks
