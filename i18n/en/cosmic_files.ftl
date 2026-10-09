@@ -33,6 +33,8 @@ grid-spacing = Grid spacing
 name = Name
 modified = Modified
 trashed-on = Trashed
+kind = Kind
+date-added = Date added
 size = Size
 
 # Progress footer
@@ -443,6 +445,8 @@ sort-by-name = Sort by name
 sort-by-modified = Sort by modified
 sort-by-size = Sort by size
 sort-by-trashed = Sort by delete time
+sort-by-kind = Sort by kind
+sort-by-date-added = Sort by date added
 remove-from-recents = Remove from recents
 
 ## Desktop
@@ -503,3 +507,7 @@ status-bytes = {$count} {$count ->
     [one] byte
     *[other] bytes
   }
+
+sort-kind = Kind
+sort-date-added-newest-first = Date added, newest first
+sort-date-added-oldest-first = Date added, oldest first

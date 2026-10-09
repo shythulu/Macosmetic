@@ -171,8 +171,10 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "block2",
+    # Resource values read at scan time (src/url_values_macos.rs).
     "NSArray",
     "NSData",
+    "NSDate",
     "NSDictionary",
     "NSEnumerator",
     "NSError",
@@ -217,6 +219,8 @@ xdgen = "0.1"
 # cap-std = "3"
 # cap-tempfile = "3"
 fastrand = "2"
+# Round-trips the saved state the way cosmic-config stores it.
+ron = "0.12"
 test-log = "0.2"
 tokio = { version = "1", features = ["rt", "macros"] }
 

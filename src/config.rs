@@ -448,6 +448,44 @@ pub struct TimeConfig {
 mod tests {
     use super::*;
 
+    type SortNames = FxOrderMap<String, (HeadingOptions, bool)>;
+
+    #[test]
+    fn sort_names_saved_before_kind_and_date_added_still_load() {
+        // `sort_names` as an earlier build wrote it, through cosmic-config's RON.
+        let saved = r#"{
+            "/Users/someone/Downloads": (Modified, false),
+            "/Users/someone/Documents": (Name, true),
+            "/Users/someone/Pictures": (Size, false),
+            "trash:///": (TrashedOn, true),
+        }"#;
+        let loaded: SortNames = ron::from_str(saved).expect("old sort_names should load");
+        assert_eq!(
+            loaded.get("/Users/someone/Downloads"),
+            Some(&(HeadingOptions::Modified, false))
+        );
+        assert_eq!(
+            loaded.get("trash:///"),
+            Some(&(HeadingOptions::TrashedOn, true))
+        );
+        assert_eq!(loaded.len(), 4);
+    }
+
+    #[test]
+    fn sort_names_round_trip_kind_and_date_added() {
+        let mut sort_names = SortNames::default();
+        sort_names.insert("/a".to_string(), (HeadingOptions::Kind, true));
+        sort_names.insert("/b".to_string(), (HeadingOptions::DateAdded, false));
+        sort_names.insert("/c".to_string(), (HeadingOptions::Modified, false));
+
+        // The same writer cosmic-config uses.
+        let saved = ron::ser::to_string_pretty(&sort_names, ron::ser::PrettyConfig::new())
+            .expect("sort_names should serialize");
+        assert!(saved.contains("Kind") && saved.contains("DateAdded"));
+        let loaded: SortNames = ron::from_str(&saved).expect("sort_names should load");
+        assert_eq!(loaded, sort_names);
+    }
+
     #[test]
     fn favorite_with_label_converts_path_to_named() {
         let favorite = Favorite::Path(PathBuf::from("/some/dir"));

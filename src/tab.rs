@@ -852,6 +852,8 @@ pub fn item_from_gvfs_info(path: PathBuf, file_info: gio::FileInfo, sizes: IconS
         dir_size,
         cut: false,
         checksums: ChecksumState::default(),
+        kind_opt: None,
+        date_added_opt: None,
     }
 }
 
@@ -973,6 +975,12 @@ fn item_from_entry_with_dataless(
     }
 
     let display_name = display_name_for_file(&path, &name, is_gvfs, is_desktop);
+    // One Foundation call per item; remote mounts skip it, as they skip the reads above.
+    let (kind_opt, date_added_opt) = if remote {
+        (None, None)
+    } else {
+        local_kind_and_date_added(&path)
+    };
 
     Item {
         name,
@@ -1001,7 +1009,27 @@ fn item_from_entry_with_dataless(
         dir_size,
         cut: false,
         checksums: ChecksumState::default(),
+        kind_opt,
+        date_added_opt,
     }
+}
+
+/// The Kind and Date Added of a local file, where the platform records them.
+#[cfg(target_os = "macos")]
+fn local_kind_and_date_added(path: &Path) -> (Option<ItemKind>, Option<SystemTime>) {
+    let (kind, date_added) = crate::url_values_macos::kind_and_date_added(path);
+    let kind = kind.map(|kind| ItemKind {
+        type_id: kind.type_id,
+        description: kind.description,
+    });
+    (kind, date_added)
+}
+
+/// Elsewhere Kind falls back to the MIME type and Date Added to the creation time, both of
+/// which the item already carries.
+#[cfg(not(target_os = "macos"))]
+fn local_kind_and_date_added(_path: &Path) -> (Option<ItemKind>, Option<SystemTime>) {
+    (None, None)
 }
 
 /// An entry the OS listed but refused to stat.
@@ -1045,6 +1073,8 @@ pub fn item_from_denied_entry(path: PathBuf, name: String, is_dir: bool, sizes: 
         dir_size: DirSize::NotDirectory,
         cut: false,
         checksums: ChecksumState::default(),
+        kind_opt: None,
+        date_added_opt: None,
     }
 }
 
@@ -1112,6 +1142,8 @@ pub fn item_from_trash_entry(
         dir_size: DirSize::NotDirectory,
         cut: false,
         checksums: ChecksumState::default(),
+        kind_opt: None,
+        date_added_opt: None,
     }
 }
 
@@ -1593,6 +1625,8 @@ pub fn scan_desktop(
             dir_size: DirSize::NotDirectory,
             cut: false,
             checksums: ChecksumState::default(),
+            kind_opt: None,
+            date_added_opt: None,
         });
     }
 
@@ -2839,9 +2873,41 @@ pub struct Item {
     pub overlaps_drag_rect: bool,
     pub dir_size: DirSize,
     pub checksums: ChecksumState,
+    /// The platform's Kind for a local item: on macOS its UTType. `None` elsewhere, on
+    /// remote mounts, and where it could not be read; [`Item::kind_sort_key`] then falls
+    /// back to the MIME type.
+    pub kind_opt: Option<ItemKind>,
+    /// When the item was put in its folder (macOS `NSURLAddedToDirectoryDateKey`).
+    pub date_added_opt: Option<SystemTime>,
+}
+
+/// What an item is, as the platform names it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemKind {
+    /// The identifier to sort on, for example `com.adobe.pdf`.
+    pub type_id: String,
+    /// The localised name to show, for example "PDF document".
+    pub description: String,
 }
 
 impl Item {
+    /// What Sort by Kind compares: the UTType identifier where there is one, else the MIME
+    /// type.
+    pub fn kind_sort_key(&self) -> &str {
+        self.kind_opt
+            .as_ref()
+            .map_or_else(|| self.mime.essence_str(), |kind| kind.type_id.as_str())
+    }
+
+    /// What Sort by Date Added compares: the recorded date where there is one, else the
+    /// creation time.
+    pub fn date_added(&self) -> Option<SystemTime> {
+        self.date_added_opt.or_else(|| match &self.metadata {
+            ItemMetadata::Path { metadata, .. } => metadata.created().ok(),
+            _ => None,
+        })
+    }
+
     fn display_name(name: &str) -> String {
         // In order to wrap at periods and underscores, add a zero width space after each one
         name.replace('.', ".\u{200B}").replace('_', "_\u{200B}")
@@ -3298,12 +3364,55 @@ pub enum View {
     Grid,
     List,
 }
+/// Folders before files when `folders_first` is on; `None` when that does not decide it.
+fn folders_first_order(a: &Item, b: &Item, folders_first: bool) -> Option<Ordering> {
+    if !folders_first {
+        return None;
+    }
+    match (a.metadata.is_dir(), b.metadata.is_dir()) {
+        (true, false) => Some(Ordering::Less),
+        (false, true) => Some(Ordering::Greater),
+        _ => None,
+    }
+}
+
+/// Sort by Kind: the type identifier in the chosen direction, then the name A to Z, so
+/// each group stays in name order when the groups are reversed.
+fn compare_by_kind(a: &Item, b: &Item, folders_first: bool, ascending: bool) -> Ordering {
+    folders_first_order(a, b, folders_first).unwrap_or_else(|| {
+        let by_kind = a.kind_sort_key().cmp(b.kind_sort_key());
+        let by_kind = if ascending {
+            by_kind
+        } else {
+            by_kind.reverse()
+        };
+        by_kind.then_with(|| LANGUAGE_SORTER.compare(&a.display_name, &b.display_name))
+    })
+}
+
+/// Sort by Date Added. Items with no date go last in either direction.
+fn compare_by_date_added(a: &Item, b: &Item, folders_first: bool, ascending: bool) -> Ordering {
+    folders_first_order(a, b, folders_first).unwrap_or_else(|| {
+        match (a.date_added(), b.date_added()) {
+            (Some(a), Some(b)) if ascending => a.cmp(&b),
+            (Some(a), Some(b)) => b.cmp(&a),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+        .then_with(|| LANGUAGE_SORTER.compare(&a.display_name, &b.display_name))
+    })
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, PartialOrd, Ord, Eq, Deserialize, Serialize)]
 pub enum HeadingOptions {
     Name = 0,
     Modified,
     Size,
     TrashedOn,
+    // New variants go last. The saved state names variants, so old values keep loading.
+    Kind,
+    DateAdded,
 }
 
 impl fmt::Display for HeadingOptions {
@@ -3313,6 +3422,8 @@ impl fmt::Display for HeadingOptions {
             Self::Modified => write!(f, "{}", fl!("modified")),
             Self::Size => write!(f, "{}", fl!("size")),
             Self::TrashedOn => write!(f, "{}", fl!("trashed-on")),
+            Self::Kind => write!(f, "{}", fl!("kind")),
+            Self::DateAdded => write!(f, "{}", fl!("date-added")),
         }
     }
 }
@@ -3324,6 +3435,8 @@ impl HeadingOptions {
             Self::Modified.to_string(),
             Self::Size.to_string(),
             Self::TrashedOn.to_string(),
+            Self::Kind.to_string(),
+            Self::DateAdded.to_string(),
         ]
     }
 }
@@ -5579,8 +5692,11 @@ impl Tab {
                     let heading_sort = if self.sort_name == heading_option {
                         !self.sort_direction
                     } else {
-                        // Default modified to descending, and others to ascending.
-                        heading_option != HeadingOptions::Modified
+                        // Default dates to descending, and others to ascending.
+                        !matches!(
+                            heading_option,
+                            HeadingOptions::Modified | HeadingOptions::DateAdded
+                        )
                     };
 
                     if !matches!(self.location, Location::Desktop(..)) {
@@ -5939,6 +6055,13 @@ impl Tab {
                         check_reverse(a_modified.cmp(&b_modified), sort_direction)
                     }
                 });
+            }
+            HeadingOptions::Kind => {
+                items.sort_by(|a, b| compare_by_kind(a.1, b.1, folders_first, sort_direction));
+            }
+            HeadingOptions::DateAdded => {
+                items
+                    .sort_by(|a, b| compare_by_date_added(a.1, b.1, folders_first, sort_direction));
             }
             HeadingOptions::TrashedOn => {
                 let time_deleted = |x: &Item| match &x.metadata {
@@ -8485,6 +8608,7 @@ mod tests {
         empty_reason, is_always_hidden, is_protected_tree, item_from_denied_entry, item_from_path,
         logical_scroll_pixels, respond_to_scroll_direction, scan_path, zoom_steps_for_scroll,
     };
+    use super::{ItemKind, compare_by_date_added, compare_by_kind};
     use crate::app::test_utils::{
         NAME_LEN, NUM_DIRS, NUM_FILES, NUM_HIDDEN, NUM_NESTED, assert_eq_tab_path, empty_fs,
         eq_path_item, filter_dirs, read_dir_sorted, simple_fs, tab_click_new,
@@ -8886,6 +9010,140 @@ mod tests {
             .map(|item| item.name)
             .collect();
         assert_eq!(names, ["b-folder", "a.rtfd", "c.txt"]);
+        Ok(())
+    }
+
+    /// An item named `name` whose Kind is `type_id`, or the MIME fallback when `None`.
+    fn item_of_kind(dir: &TempDir, name: &str, type_id: Option<&str>) -> Item {
+        let mut item = item_named(dir, name);
+        item.kind_opt = type_id.map(|type_id| ItemKind {
+            type_id: type_id.to_string(),
+            description: type_id.to_string(),
+        });
+        item
+    }
+
+    fn folder_item(dir: &TempDir, name: &str) -> Item {
+        let path = dir.path().join(name);
+        fs::create_dir(&path).expect("failed to create the test folder");
+        let mut item = item_from_path(path, IconSizes::default()).expect("failed to build");
+        item.kind_opt = Some(ItemKind {
+            type_id: "public.folder".to_string(),
+            description: "Folder".to_string(),
+        });
+        item
+    }
+
+    fn names_sorted_by(
+        mut items: Vec<Item>,
+        compare: fn(&Item, &Item, bool, bool) -> std::cmp::Ordering,
+        folders_first: bool,
+        ascending: bool,
+    ) -> Vec<String> {
+        items.sort_by(|a, b| compare(a, b, folders_first, ascending));
+        items.into_iter().map(|item| item.name).collect()
+    }
+
+    #[test]
+    fn sort_by_kind_groups_each_type_in_name_order() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let items = vec![
+            item_of_kind(&dir, "c.pdf", Some("com.adobe.pdf")),
+            item_of_kind(&dir, "a.txt", Some("public.plain-text")),
+            folder_item(&dir, "zfolder"),
+            item_of_kind(&dir, "b.pdf", Some("com.adobe.pdf")),
+            item_of_kind(&dir, "d.png", Some("public.png")),
+        ];
+
+        assert_eq!(
+            names_sorted_by(items.clone(), compare_by_kind, true, true),
+            ["zfolder", "b.pdf", "c.pdf", "a.txt", "d.png"]
+        );
+        // Reversed, the groups swap but names inside a group stay A to Z, and folders
+        // still lead.
+        assert_eq!(
+            names_sorted_by(items.clone(), compare_by_kind, true, false),
+            ["zfolder", "d.png", "a.txt", "b.pdf", "c.pdf"]
+        );
+        // Without folders first the folder sorts by its own type, public.folder.
+        assert_eq!(
+            names_sorted_by(items, compare_by_kind, false, true),
+            ["b.pdf", "c.pdf", "zfolder", "a.txt", "d.png"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sort_by_kind_falls_back_to_the_mime_type() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let with_mime = |name: &str, mime: &str| {
+            let mut item = item_of_kind(&dir, name, None);
+            item.mime = mime.parse().expect("a valid MIME type");
+            item
+        };
+        let text = with_mime("notes.txt", "text/plain");
+        assert_eq!(text.kind_sort_key(), "text/plain");
+        let items = vec![
+            text,
+            with_mime("b.pdf", "application/pdf"),
+            with_mime("a.pdf", "application/pdf"),
+        ];
+        assert_eq!(
+            names_sorted_by(items, compare_by_kind, true, true),
+            ["a.pdf", "b.pdf", "notes.txt"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sort_by_date_added_puts_undated_items_last() -> io::Result<()> {
+        use std::time::{Duration, SystemTime};
+        let dir = TempDir::new()?;
+        let dated = |name: &str, secs: Option<u64>| {
+            let mut item = item_named(&dir, name);
+            item.date_added_opt =
+                secs.map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs));
+            item
+        };
+        let mut folder = folder_item(&dir, "folder");
+        folder.date_added_opt = Some(SystemTime::UNIX_EPOCH);
+        let mut items = vec![
+            dated("old", Some(100)),
+            dated("new", Some(300)),
+            dated("mid", Some(200)),
+            folder,
+        ];
+        assert_eq!(
+            names_sorted_by(items.clone(), compare_by_date_added, true, false),
+            ["folder", "new", "mid", "old"]
+        );
+        assert_eq!(
+            names_sorted_by(items.clone(), compare_by_date_added, false, true),
+            ["folder", "old", "mid", "new"]
+        );
+
+        // An item with no date of its own and no creation time to fall back on goes last
+        // in both directions.
+        let mut undated = item_named(&dir, "undated");
+        undated.date_added_opt = None;
+        undated.metadata = ItemMetadata::SimpleFile { size: 0 };
+        items.push(undated);
+        for ascending in [true, false] {
+            let names = names_sorted_by(items.clone(), compare_by_date_added, false, ascending);
+            assert_eq!(names.last().map(String::as_str), Some("undated"));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_local_scan_reads_kind_and_date_added() -> io::Result<()> {
+        let dir = TempDir::new()?;
+        let pdf = item_named(&dir, "report.pdf");
+        let kind = pdf.kind_opt.expect("a local file should have a Kind");
+        assert_eq!(kind.type_id, "com.adobe.pdf");
+        assert!(!kind.description.is_empty());
+        assert!(pdf.date_added_opt.is_some());
         Ok(())
     }
 

@@ -596,6 +596,8 @@ fn heading_to_name(heading: &HeadingOptions) -> &'static str {
         HeadingOptions::Modified => "Modified",
         HeadingOptions::Size => "Size",
         HeadingOptions::TrashedOn => "TrashedOn",
+        HeadingOptions::Kind => "Kind",
+        HeadingOptions::DateAdded => "DateAdded",
     }
 }
 
@@ -605,6 +607,8 @@ fn heading_from_name(name: &str) -> Option<HeadingOptions> {
         "modified" => HeadingOptions::Modified,
         "size" => HeadingOptions::Size,
         "trashedon" => HeadingOptions::TrashedOn,
+        "kind" => HeadingOptions::Kind,
+        "dateadded" => HeadingOptions::DateAdded,
         _ => return None,
     })
 }
@@ -1134,6 +1138,8 @@ mod tests {
             Action::ToggleSort(HeadingOptions::TrashedOn),
             Action::SetSort(HeadingOptions::Modified, true),
             Action::SetSort(HeadingOptions::Size, false),
+            Action::ToggleSort(HeadingOptions::Kind),
+            Action::SetSort(HeadingOptions::DateAdded, false),
         ];
         #[cfg(feature = "desktop")]
         actions.push(Action::ExecEntryAction(2));
