@@ -101,6 +101,8 @@ pub fn ctrl_key_binds(mode: &tab::Mode) -> HashMap<KeyBind, Action> {
         bind!([Shift], Key::Named(Named::Enter), OpenInNewWindow);
         bind!([Ctrl], Key::Character("v".into()), Paste);
         bind!([], Key::Named(Named::F2), Rename);
+        bind!([Ctrl], Key::Character("z".into()), Undo);
+        bind!([Ctrl, Shift], Key::Character("z".into()), Redo);
     }
 
     // App and dialog only keys
@@ -213,6 +215,8 @@ pub fn cmd_key_binds(mode: &tab::Mode) -> HashMap<KeyBind, Action> {
         bind!([Super], Key::Character("v".into()), Paste);
         bind!([], Key::Named(Named::Enter), Rename);
         bind!([], Key::Named(Named::F2), Rename);
+        bind!([Super], Key::Character("z".into()), Undo);
+        bind!([Super, Shift], Key::Character("z".into()), Redo);
     }
 
     // App and dialog only keys
@@ -708,6 +712,8 @@ unit_actions![
     TabViewList,
     ToggleFoldersFirst,
     ToggleShowHidden,
+    Undo,
+    Redo,
     WindowClose,
     WindowNew,
     ZoomDefault,
@@ -1107,8 +1113,8 @@ mod tests {
             assert_eq!(&action.config_name(), name);
             assert_eq!(Action::from_config_name(name), Some(*action));
         }
-        // 67 payload-free variants plus the four parameterized ones below.
-        assert_eq!(UNIT_ACTIONS.len(), 67);
+        // 69 payload-free variants plus the four parameterized ones below.
+        assert_eq!(UNIT_ACTIONS.len(), 69);
     }
 
     #[test]
@@ -1255,6 +1261,8 @@ mod tests {
             ("Cmd++", Action::ZoomIn),
             ("Cmd+-", Action::ZoomOut),
             ("Cmd+0", Action::ZoomDefault),
+            ("Cmd+z", Action::Undo),
+            ("Cmd+Shift+z", Action::Redo),
         ] {
             assert_eq!(
                 binds.get(parse(binding).key_bind()),

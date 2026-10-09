@@ -569,6 +569,8 @@ pub fn menu_bar<'a>(
     modifiers: &Modifiers,
     key_binds: &HashMap<KeyBind, Action>,
     clipboard_paste_available: bool,
+    next_undo: Option<crate::undo::Kind>,
+    next_redo: Option<crate::undo::Kind>,
 ) -> Element<'a, Message> {
     let key_binds = menu_key_binds(key_binds);
     let key_binds = &*key_binds;
@@ -665,6 +667,23 @@ pub fn menu_bar<'a>(
                 (
                     (fl!("edit")),
                     vec![
+                        match next_undo {
+                            Some(kind) => menu::Item::Button(
+                                fl!("undo-action", action = kind.name()),
+                                None,
+                                Action::Undo,
+                            ),
+                            None => menu::Item::ButtonDisabled(fl!("undo"), None, Action::Undo),
+                        },
+                        match next_redo {
+                            Some(kind) => menu::Item::Button(
+                                fl!("redo-action", action = kind.name()),
+                                None,
+                                Action::Redo,
+                            ),
+                            None => menu::Item::ButtonDisabled(fl!("redo"), None, Action::Redo),
+                        },
+                        menu::Item::Divider,
                         menu_button_optional(fl!("cut"), Action::Cut, selected > 0),
                         menu_button_optional(fl!("copy"), Action::Copy, selected > 0),
                         menu_button_optional(fl!("move-to"), Action::MoveTo, selected > 0),
