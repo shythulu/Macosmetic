@@ -31,7 +31,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::cmp::{Ordering, Reverse};
+use std::cmp::Ordering;
+#[cfg(not(target_os = "macos"))]
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt::{self, Display};
@@ -1307,6 +1309,26 @@ pub fn scan_search<F: Fn(SearchItem) -> bool + Sync>(
                     })
                 });
         }
+        #[cfg(target_os = "macos")]
+        SearchLocation::Recents => {
+            for (path, _) in crate::spotlight_macos::recent_files() {
+                let Some(file_name) = path.file_name() else {
+                    continue;
+                };
+                let file_name = file_name.to_string_lossy().to_string();
+                if !regex.is_match(&file_name) {
+                    continue;
+                }
+                // Spotlight's index can lag a delete, so a missing file is skipped.
+                let Ok(metadata) = path.metadata() else {
+                    continue;
+                };
+                if !callback(SearchItem::Path(path, file_name, metadata)) {
+                    break;
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
         SearchLocation::Recents => {
             let recent_files = match recently_used_xbel::parse_file() {
                 Ok(recent_files) => recent_files,
@@ -1354,6 +1376,7 @@ pub fn scan_search<F: Fn(SearchItem) -> bool + Sync>(
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn uri_to_path(uri: String) -> Option<PathBuf> {
     uri.parse::<url::Url>().ok().and_then(|url| {
         //TODO support for external drive or cloud?
@@ -1365,6 +1388,14 @@ fn uri_to_path(uri: String) -> Option<PathBuf> {
     })
 }
 
+/// On macOS, Recents comes from Spotlight, and this app cannot clear Spotlight's history.
+/// So the "Clear recents history" entry, which this gates, never shows.
+#[cfg(target_os = "macos")]
+pub fn has_recents() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn has_recents() -> bool {
     match recently_used_xbel::parse_file() {
         Ok(recent_files) => !recent_files.bookmarks.is_empty(),
@@ -1372,6 +1403,22 @@ pub fn has_recents() -> bool {
     }
 }
 
+/// Recents on macOS: files any app opened in the last 30 days, from Spotlight, like
+/// Finder's Recents. See `spotlight_macos`.
+#[cfg(target_os = "macos")]
+pub fn scan_recents(sizes: IconSizes) -> Vec<Item> {
+    crate::spotlight_macos::recent_files()
+        .into_iter()
+        .filter_map(|(path, _)| {
+            let name = path.file_name()?.to_string_lossy().to_string();
+            // Spotlight's index can lag a delete, so a missing file is skipped.
+            let metadata = path.metadata().ok()?;
+            Some(item_from_entry(path, name, metadata, sizes))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn scan_recents(sizes: IconSizes) -> Vec<Item> {
     let recent_files = match recently_used_xbel::parse_file() {
         Ok(recent_files) => recent_files,
@@ -7257,7 +7304,10 @@ impl Tab {
                     );
                 }
             }
-            Location::Recents | Location::Search(SearchLocation::Recents, ..) => {
+            // On macOS, Recents is Spotlight's history, which this app cannot clear.
+            Location::Recents | Location::Search(SearchLocation::Recents, ..)
+                if cfg!(not(target_os = "macos")) =>
+            {
                 if let Some(items) = self.items_opt()
                     && !items.is_empty()
                 {

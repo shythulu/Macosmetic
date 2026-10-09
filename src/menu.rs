@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use cosmic::{Element, theme};
 use cosmic::app::Core;
 use cosmic::iced::keyboard::Modifiers;
 use cosmic::widget::menu::action::MenuAction;
 use cosmic::widget::menu::key_bind::KeyBind;
 use cosmic::widget::menu::{self, ItemHeight, ItemWidth, MenuBar};
 use cosmic::widget::{self, responsive_menu_bar};
+use cosmic::{Element, theme};
 use i18n_embed::LanguageLoader;
 use mime_guess::Mime;
 use std::collections::HashMap;
@@ -260,7 +260,9 @@ pub fn context_menu<'a>(
                         children.push(menu_item(fl!("add-to-sidebar"), Action::AddToSidebar));
                     }
                     children.push(menu::Item::Divider);
-                    if tab.location.is_recents() {
+                    // On macOS, Recents is Spotlight's history, which this app cannot
+                    // edit, so there is no "Remove from recents".
+                    if tab.location.is_recents() && cfg!(not(target_os = "macos")) {
                         children.push(menu_item(
                             fl!("remove-from-recents"),
                             Action::RemoveFromRecents,
