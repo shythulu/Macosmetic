@@ -20,6 +20,8 @@ pub mod channel;
 pub mod clipboard;
 pub mod config;
 mod context_action;
+#[cfg(target_os = "macos")]
+mod copyfile_macos;
 pub mod dialog;
 mod folder_appearance;
 pub mod folder_look;
