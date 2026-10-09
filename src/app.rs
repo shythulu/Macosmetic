@@ -1975,6 +1975,9 @@ impl App {
                 .divider_above()
         });
 
+        // The Network entry browses `network:///` through gvfs. On macOS no mounter can browse
+        // it yet, so the entry stays hidden there until Connect to Server lands.
+        #[cfg(not(target_os = "macos"))]
         if !MOUNTERS.is_empty() {
             nav_model = nav_model.insert(|b| {
                 b.text(fl!("networks"))

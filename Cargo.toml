@@ -144,7 +144,8 @@ objc2 = "0.6"
 # space is set through NSView/NSWindow, and the application lifecycle goes through
 # NSApplication and NSNotificationCenter (see src/appkit_macos.rs). Open With asks
 # LaunchServices through NSWorkspace and renders app icons with NSImage (see
-# src/workspace_macos.rs).
+# src/workspace_macos.rs). Volumes are listed and ejected through NSWorkspace (see
+# src/mounter/macos.rs).
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "bitflags",
@@ -183,7 +184,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSString",
     "NSURL",
     "NSUserDefaults",
-    # NSNumber, for the volume free space the status bar reads (src/status_bar.rs).
+    # NSNumber, for the volume free space the status bar reads (src/status_bar.rs),
+    # and volume names and ejectability (src/mounter/macos.rs).
     "NSValue",
 ] }
 objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = [
