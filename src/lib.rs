@@ -24,6 +24,7 @@ mod copy_path;
 #[cfg(target_os = "macos")]
 mod copyfile_macos;
 pub mod dialog;
+mod duplicate;
 mod folder_appearance;
 pub mod folder_look;
 #[cfg(target_os = "macos")]

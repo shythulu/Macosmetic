@@ -205,6 +205,7 @@ pub enum Action {
     CosmicSettingsWallpaper,
     DesktopViewOptions,
     Delete,
+    Duplicate,
     EditHistory,
     EditLocation,
     Eject,
@@ -227,6 +228,7 @@ pub enum Action {
     MoveTo,
     NewFile,
     NewFolder,
+    NewFolderWithSelection,
     Open,
     OpenInNewTab,
     OpenInNewWindow,
@@ -286,6 +288,7 @@ impl Action {
             Self::CosmicSettingsWallpaper => Message::CosmicSettings("wallpaper"),
             Self::Delete => Message::Delete(entity_opt),
             Self::DesktopViewOptions => Message::DesktopViewOptions,
+            Self::Duplicate => Message::Duplicate(entity_opt),
             Self::EditHistory => Message::ToggleContextPage(ContextPage::EditHistory),
             Self::EditLocation => Message::TabMessage(entity_opt, tab::Message::EditLocationEnable),
             Self::Eject => Message::Eject,
@@ -310,6 +313,7 @@ impl Action {
             Self::MoveTo => Message::MoveTo(entity_opt),
             Self::NewFile => Message::NewItem(entity_opt, false),
             Self::NewFolder => Message::NewItem(entity_opt, true),
+            Self::NewFolderWithSelection => Message::NewFolderWithSelection(entity_opt),
             Self::Open => Message::TabMessage(entity_opt, tab::Message::Open(None)),
             Self::OpenInNewTab => Message::OpenInNewTab(entity_opt),
             Self::OpenInNewWindow => Message::OpenInNewWindow(entity_opt),
@@ -461,6 +465,8 @@ pub enum Message {
     DialogPush(DialogPage, Option<widget::Id>),
     DialogUpdate(DialogPage),
     DialogUpdateComplete(DialogPage),
+    /// Copy the selected items next to themselves with Finder's " copy" names.
+    Duplicate(Option<Entity>),
     ExtractHere(Option<Entity>),
     ExtractTo(Option<Entity>),
     ExtractToResult(DialogResult),
@@ -498,6 +504,8 @@ pub enum Message {
     #[cfg(feature = "notify")]
     Notification(Arc<Mutex<notify_rust::NotificationHandle>>),
     NotifyEvents(Vec<DebouncedEvent>),
+    /// Move the selected items into a new folder, then rename that folder.
+    NewFolderWithSelection(Option<Entity>),
     NotifyWatcher(WatcherWrapper),
     OpenTerminal(Option<Entity>),
     OpenInNewTab(Option<Entity>),
@@ -1542,6 +1550,10 @@ impl App {
                     commands.push(self.move_folder_looks([(from, to)].as_slice()));
                 } else if let Operation::Move {
                     ref paths, ref to, ..
+                }
+                | Operation::NewFolderWithItems {
+                    ref paths,
+                    path: ref to,
                 } = op
                 {
                     let path_changes: Box<[_]> = paths
@@ -1556,6 +1568,11 @@ impl App {
 
                 if matches!(op, Operation::RemoveFromRecents { .. }) {
                     commands.push(self.rescan_recents());
+                }
+
+                // Finder puts the new folder straight into rename.
+                if let Operation::NewFolderWithItems { ref path, .. } = op {
+                    commands.push(self.rename_dialog(path.clone()));
                 }
 
                 self.complete_operations.insert(id, op);
@@ -1867,6 +1884,29 @@ impl App {
             ]);
         }
         Task::none()
+    }
+
+    /// Open the rename dialog for one item, with its name selected up to the extension.
+    fn rename_dialog(&mut self, path: PathBuf) -> Task<Message> {
+        let (Some(parent), Some(name)) = (
+            path.parent().map(Path::to_path_buf),
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string),
+        ) else {
+            return Task::none();
+        };
+        let dir = path.is_dir();
+        Task::batch([
+            self.dialog_pages.push_back(DialogPage::RenameItem {
+                from: path,
+                parent,
+                name: name.clone(),
+                dir,
+            }),
+            widget::text_input::focus(self.dialog_text_input.clone()),
+            widget::text_input::select_until_last(self.dialog_text_input.clone(), &name, '.'),
+        ])
     }
 
     fn selected_paths(
@@ -4387,6 +4427,36 @@ impl Application for App {
                             error,
                         });
                     }
+                }
+            }
+            Message::Duplicate(entity_opt) => {
+                let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                if self
+                    .tab_model
+                    .data::<Tab>(entity)
+                    .is_none_or(|tab| tab.location.is_trash())
+                {
+                    return Task::none();
+                }
+                let paths: Vec<_> = self.selected_paths(entity_opt).collect();
+                if !paths.is_empty() {
+                    return self.operation(Operation::Duplicate { paths });
+                }
+            }
+            Message::NewFolderWithSelection(entity_opt) => {
+                let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                let Some(parent) = self
+                    .tab_model
+                    .data::<Tab>(entity)
+                    .and_then(|tab| tab.location.path_opt().cloned())
+                else {
+                    return Task::none();
+                };
+                let paths: Vec<_> = self.selected_paths(entity_opt).collect();
+                // Only items that live in the folder on screen, as in Finder.
+                if !paths.is_empty() && paths.iter().all(|p| p.parent() == Some(&parent)) {
+                    let path = crate::duplicate::new_folder_with_items_path(&parent);
+                    return self.operation(Operation::NewFolderWithItems { path, paths });
                 }
             }
             Message::NewItem(entity_opt, dir) => {
