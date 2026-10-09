@@ -44,9 +44,12 @@ pub mod operation;
 pub(crate) mod quicklook_macos;
 mod spawn_detached;
 pub mod tab;
+pub mod tags;
 mod thumbnail_cacher;
 mod thumbnailer;
 pub(crate) mod trash;
+#[cfg(target_os = "macos")]
+pub(crate) mod url_values_macos;
 mod zoom;
 
 pub(crate) type FxOrderMap<K, V> = ordermap::OrderMap<K, V, rustc_hash::FxBuildHasher>;

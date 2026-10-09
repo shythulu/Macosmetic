@@ -308,6 +308,7 @@ show-details = Show details
 type = Type: {$mime}
 items = Items: {$items}
 item-size = Size: {$size}
+tags = Tags: {$tags}
 item-created = Created: {$created}
 item-modified = Modified: {$modified}
 item-accessed = Accessed: {$accessed}
