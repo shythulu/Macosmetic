@@ -217,8 +217,8 @@ thread_local! {
 /// Start following the system's look. Safe to call repeatedly; only the first call does
 /// anything.
 ///
-/// Must run on the main thread once the application object exists: creating it any earlier
-/// would preempt winit's.
+/// Must run on the main thread, after winit has set up the application object, so that the
+/// observer lands on the application winit drives.
 pub fn observe() {
     let Some(mtm) = MainThreadMarker::new() else {
         log::warn!("not following the system appearance: not on the main thread");
@@ -243,6 +243,9 @@ pub fn observe() {
                 std::ptr::null_mut(),
             );
         }
+        // KVO does not retain its observers, and a thread-local is dropped at exit, so keep an
+        // extra reference that is never released.
+        std::mem::forget(observer.clone());
         let _ = registered.set(observer);
 
         let changed = RcBlock::new(|_: NonNull<NSNotification>| {
@@ -271,6 +274,9 @@ pub fn changes() -> Subscription<Look> {
     Subscription::run(|| {
         cosmic::iced::stream::channel(1, async |mut output| {
             let mut system = SYSTEM.subscribe();
+            // `subscribe` marks the current look as seen. Deliver it anyway, in case
+            // `observe` published before this stream started.
+            system.mark_changed();
             // The sender is a static, so it is never dropped and this never ends.
             while system.changed().await.is_ok() {
                 let Some(look) = *system.borrow_and_update() else {
