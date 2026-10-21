@@ -133,13 +133,17 @@ fn read_theme(path: &Path) -> Result<(bool, Theme), Box<dyn std::error::Error>> 
 mod tests {
     use super::*;
 
+    /// Four from cosmic-ext-themes and twenty Darkberry flavours and tints.
+    const VENDORED: usize = 24;
+
     fn vendored_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("res/themes/cosmic")
     }
 
-    /// The themes vendored under `res/themes/cosmic` must all parse. They are written in
-    /// an older `ThemeBuilder` shape than the one we build against (`is_frosted` became
-    /// `frosted`), so this is really a check that serde's defaulting absorbs the drift.
+    /// The themes vendored under `res/themes/cosmic` must all parse. The cosmic-ext-themes
+    /// four are written in an older `ThemeBuilder` shape than the one we build against
+    /// (`is_frosted` became `frosted`), so for them this is really a check that serde's
+    /// defaulting absorbs the drift; the Darkberry twenty are generated against this one.
     #[test]
     fn vendored_themes_parse() {
         let dir = vendored_dir();
@@ -152,7 +156,7 @@ mod tests {
             read_theme(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
             count += 1;
         }
-        assert_eq!(count, 4, "expected the four vendored themes");
+        assert_eq!(count, VENDORED, "expected every vendored theme");
     }
 
     /// Scanning a directory of theme files yields them all, named by file stem and sorted.
@@ -165,8 +169,28 @@ mod tests {
         assert_eq!(
             names,
             [
+                "Blueberry Blackwater",
+                "Blueberry Fen",
+                "Blueberry Mire",
+                "Blueberry Wisp",
+                "Cloudberry Blackwater",
+                "Cloudberry Fen",
+                "Cloudberry Mire",
+                "Cloudberry Wisp",
+                "Crowberry Blackwater",
+                "Crowberry Fen",
+                "Crowberry Mire",
+                "Crowberry Wisp",
+                "Darkberry Blackwater",
+                "Darkberry Fen",
+                "Darkberry Mire",
+                "Darkberry Wisp",
                 "Forest Dark",
                 "HP Dev One",
+                "Lingonberry Blackwater",
+                "Lingonberry Fen",
+                "Lingonberry Mire",
+                "Lingonberry Wisp",
                 "System76 Dark",
                 "System76 Light"
             ],
@@ -181,11 +205,11 @@ mod tests {
         let missing = Path::new("/nonexistent/themes/cosmic").to_path_buf();
         // A directory that does not exist is skipped rather than ending the scan.
         let found = load_from(&[missing, vendored_dir()]);
-        assert_eq!(found.len(), 4);
+        assert_eq!(found.len(), VENDORED);
 
         // The same directory twice must not produce duplicates.
         let twice = load_from(&[vendored_dir(), vendored_dir()]);
-        assert_eq!(twice.len(), 4, "a name seen already is not added again");
+        assert_eq!(twice.len(), VENDORED, "a name seen already is not added again");
     }
 
     /// Dark and light must come from the palette, not the file name: none of the vendored
@@ -197,5 +221,9 @@ mod tests {
         assert!(!is_dark, "System76 Light has a light palette");
         let (is_dark, _) = read_theme(&dir.join("Forest Dark.ron")).expect("dark theme");
         assert!(is_dark, "Forest Dark has a dark palette");
+        let (is_dark, _) = read_theme(&dir.join("Darkberry Wisp.ron")).expect("Wisp");
+        assert!(!is_dark, "Wisp is Darkberry's light flavour");
+        let (is_dark, _) = read_theme(&dir.join("Darkberry Blackwater.ron")).expect("Blackwater");
+        assert!(is_dark, "Blackwater is Darkberry's darkest flavour");
     }
 }

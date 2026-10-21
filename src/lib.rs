@@ -14,6 +14,8 @@ use crate::tab::Location;
 
 pub mod app;
 #[cfg(target_os = "macos")]
+pub(crate) mod appearance_macos;
+#[cfg(target_os = "macos")]
 pub(crate) mod appkit_macos;
 mod archive;
 pub mod channel;

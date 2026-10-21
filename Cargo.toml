@@ -157,6 +157,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "objc2-core-foundation",
     "objc2-uniform-type-identifiers",
     "NSApplication",
+    # The system appearance and accent colour "Match desktop" follows (src/appearance_macos.rs).
+    "NSAppearance",
+    "NSColor",
     "NSBitmapImageRep",
     "NSColorSpace",
     "NSEvent",
@@ -189,6 +192,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSData",
     "NSDate",
     "NSDictionary",
+    "NSKeyValueObserving",
     "NSEnumerator",
     "NSError",
     # Move to Trash without Finder (src/trash_macos.rs).

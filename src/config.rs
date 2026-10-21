@@ -56,6 +56,17 @@ impl AppTheme {
                 t.theme_type.prefer_dark(Some(false));
                 t
             }
+            // There is no COSMIC desktop to match on macOS, and libcosmic's system
+            // preference would always answer dark there. Match the macOS appearance and
+            // accent colour instead.
+            #[cfg(target_os = "macos")]
+            Self::System => {
+                let look = crate::appearance_macos::current();
+                let mut t = look.theme();
+                t.theme_type.prefer_dark(Some(look.is_dark()));
+                t
+            }
+            #[cfg(not(target_os = "macos"))]
             Self::System => theme::system_preference(),
             Self::Named(name) => crate::theme_catalog::get(name)
                 .map(|found| {
