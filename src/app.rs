@@ -605,6 +605,9 @@ pub enum Message {
     /// Share the selected items through the system share menu or AirDrop. macOS only.
     Share(Option<Entity>, ShareVia),
     SystemThemeModeChange,
+    /// macOS changed its appearance or accent colour.
+    #[cfg(target_os = "macos")]
+    SystemLook,
     Size(window::Id, Size),
     /// A window reported how many physical pixels it draws per logical pixel.
     Rescaled(window::Id, f32),
@@ -5452,6 +5455,12 @@ impl Application for App {
                 config_set!(type_to_search, type_to_search);
                 return self.update_config();
             }
+            #[cfg(target_os = "macos")]
+            Message::SystemLook => {
+                if self.config.app_theme == AppTheme::System {
+                    return cosmic::command::set_theme(self.config.app_theme.theme());
+                }
+            }
             Message::SystemThemeModeChange => {
                 return self.update_config();
             }
@@ -6512,6 +6521,10 @@ impl Application for App {
                     // at Message::Quit. Also a no-op after the first.
                     #[cfg(target_os = "macos")]
                     crate::appkit_macos::route_quit_menu_item();
+                    // Following the system appearance needs the application object, which
+                    // winit has created by now. Also a no-op after the first.
+                    #[cfg(target_os = "macos")]
+                    crate::appearance_macos::observe();
                 } else {
                     #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
                     self.layer_sizes.insert(window_id, size);
@@ -8327,6 +8340,8 @@ impl Application for App {
         subscriptions.push(crate::appkit_macos::activation_subscription().map(|_| Message::Reopen));
         #[cfg(target_os = "macos")]
         subscriptions.push(crate::appkit_macos::quit_subscription().map(|_| Message::Quit));
+        #[cfg(target_os = "macos")]
+        subscriptions.push(crate::appearance_macos::changes().map(|_| Message::SystemLook));
         #[cfg(target_os = "macos")]
         subscriptions.push(
             crate::appkit_macos::open_documents_subscription().map(|documents| {
