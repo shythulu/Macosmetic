@@ -7804,7 +7804,8 @@ impl Tab {
                 context_quick_bar,
             )),
         )
-        .item_width(cosmic::widget::menu::ItemWidth::Uniform(360))
+        // Wide enough for the longest entry, "New folder with selection (N items)", and its shortcut.
+        .item_width(cosmic::widget::menu::ItemWidth::Uniform(300))
         .on_surface_action(Message::Surface);
         if let Some(window_id) = self.window_id {
             context_menu = context_menu.window_id(window_id);

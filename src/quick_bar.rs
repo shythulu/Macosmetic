@@ -6,7 +6,8 @@
 //!
 //! [`items`] decides which buttons the bar shows for a selection and clipboard state. It
 //! is a pure function so the rules can be tested without a window. [`view`] turns that
-//! list into the element the menu holds as its first row. The menu widget never asks its
+//! list into the element the menu holds as its first row. [`row_view`] is the row widget
+//! itself, shared with the Open row and the tag row. The menu widget never asks its
 //! rows for overlays, so a plain `widget::tooltip` would not show inside it; [`QuickBar`]
 //! paints the hovered button's name and shortcut itself instead.
 
@@ -151,30 +152,72 @@ pub fn view(
     items: &[Item],
     key_binds: &HashMap<KeyBind, Action>,
 ) -> Element<'static, tab::Message> {
-    let mut row = widget::row::with_capacity(items.len())
+    let buttons = items
+        .iter()
+        .map(|item| {
+            let action = item.action.action();
+            RowButton {
+                icon: widget::icon::from_name(item.action.icon_name())
+                    .size(16)
+                    .handle(),
+                tooltip: tooltip(item.action.label(), action, key_binds),
+                on_press: item.enabled.then_some(tab::Message::ContextAction(action)),
+            }
+        })
+        .collect();
+    row_view(buttons)
+}
+
+/// One icon button of a menu row.
+pub struct RowButton {
+    pub icon: widget::icon::Handle,
+    /// Shown above the row while the button is hovered.
+    pub tooltip: String,
+    /// `None` draws the button dimmed and inert.
+    pub on_press: Option<tab::Message>,
+}
+
+/// A row of icon buttons for a context menu, with a self-drawn tooltip. The quick bar, the
+/// Open row and the tag row all use it, so they share height, inset and spacing.
+pub fn row_view(buttons: Vec<RowButton>) -> Element<'static, tab::Message> {
+    row_view_padded(buttons, cosmic::theme::spacing().space_xxs)
+}
+
+/// [`row_view`] with tighter buttons, for a row with more buttons than the menu is wide
+/// for at the normal size: the tag row's seven dots.
+pub fn compact_row_view(buttons: Vec<RowButton>) -> Element<'static, tab::Message> {
+    row_view_padded(buttons, cosmic::theme::spacing().space_xxxs)
+}
+
+fn row_view_padded(buttons: Vec<RowButton>, padding: u16) -> Element<'static, tab::Message> {
+    let mut row = widget::row::with_capacity(buttons.len())
         .spacing(GAP as u16)
         .align_y(alignment::Vertical::Center);
-    let mut tooltips = Vec::with_capacity(items.len());
-    for item in items {
-        let action = item.action.action();
-        let handle = widget::icon::from_name(item.action.icon_name())
-            .size(16)
-            .handle();
-        if item.enabled {
-            row = row
-                .push(widget::button::icon(handle).on_press(tab::Message::ContextAction(action)));
-        } else {
-            // The icon widget ignores the button's disabled colour, so dim it here.
-            let icon = widget::icon::icon(handle)
-                .size(16)
-                .opacity(DISABLED_OPACITY);
-            row = row.push(
-                widget::button::custom(icon)
-                    .class(cosmic::theme::Button::Icon)
-                    .padding(cosmic::theme::spacing().space_xxs),
-            );
+    let mut tooltips = Vec::with_capacity(buttons.len());
+    for button in buttons {
+        match button.on_press {
+            Some(message) => {
+                let icon = widget::icon::icon(button.icon).size(16);
+                row = row.push(
+                    widget::button::custom(icon)
+                        .class(cosmic::theme::Button::Icon)
+                        .padding(padding)
+                        .on_press(message),
+                );
+            }
+            None => {
+                // The icon widget ignores the button's disabled colour, so dim it here.
+                let icon = widget::icon::icon(button.icon)
+                    .size(16)
+                    .opacity(DISABLED_OPACITY);
+                row = row.push(
+                    widget::button::custom(icon)
+                        .class(cosmic::theme::Button::Icon)
+                        .padding(padding),
+                );
+            }
         }
-        tooltips.push(tooltip_text(item.action, key_binds));
+        tooltips.push(button.tooltip);
     }
     let content = widget::container(row)
         .padding([0, BAR_INSET])
@@ -188,17 +231,16 @@ pub fn view(
     .into()
 }
 
-/// "Cut  ⌘X": the action's name and, when bound, its shortcut in menu notation.
-fn tooltip_text(action: QuickAction, key_binds: &HashMap<KeyBind, Action>) -> String {
-    let target = action.action();
+/// "Cut  ⌘X": a button's name and, when `target` is bound, its shortcut in menu notation.
+pub fn tooltip(label: String, target: Action, key_binds: &HashMap<KeyBind, Action>) -> String {
     let shortcut = key_binds
         .iter()
         .filter(|(_, bound)| **bound == target)
         .map(|(key_bind, _)| menu_label(key_bind))
         .min();
     match shortcut {
-        Some(shortcut) if !shortcut.is_empty() => format!("{}  {shortcut}", action.label()),
-        _ => action.label(),
+        Some(shortcut) if !shortcut.is_empty() => format!("{label}  {shortcut}"),
+        _ => label,
     }
 }
 
@@ -519,7 +561,7 @@ mod tests {
     fn tooltip_names_the_shortcut() {
         crate::localize::localize();
         let key_binds = crate::key_bind::key_binds(&tab::Mode::App);
-        let text = tooltip_text(QuickAction::Copy, &key_binds);
+        let text = tooltip(QuickAction::Copy.label(), Action::Copy, &key_binds);
         assert!(text.starts_with("Copy"), "{text}");
         assert!(text.len() > "Copy".len(), "no shortcut in {text}");
     }

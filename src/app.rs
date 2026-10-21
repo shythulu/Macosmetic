@@ -271,8 +271,7 @@ pub enum Action {
     ToggleShowHidden,
     ToggleSort(HeadingOptions),
     ToggleStatusBar,
-    /// Toggle entry N of the Tags submenu on the selection; see `tags_macos::menu_tags`.
-    #[cfg(target_os = "macos")]
+    /// Toggle entry N of the Tags submenu on the selection; see `tags::menu_tags`.
     ToggleTag(usize),
     Undo,
     Redo,
@@ -367,7 +366,6 @@ impl Action {
             Self::ToggleFoldersFirst => Message::ToggleFoldersFirst,
             Self::ToggleShowHidden => Message::ToggleShowHidden,
             Self::ToggleStatusBar => Message::StatusBar(status_bar::Message::Toggle),
-            #[cfg(target_os = "macos")]
             Self::ToggleTag(index) => Message::ToggleTag(entity_opt, *index),
             Self::ToggleSort(sort) => {
                 Message::TabMessage(entity_opt, tab::Message::ToggleSort(*sort))
@@ -572,7 +570,6 @@ pub enum Message {
     PendingPauseAll(bool),
     PermanentlyDelete(Option<Entity>),
     Preview(Option<Entity>),
-    #[cfg(target_os = "macos")]
     ToggleTag(Option<Entity>, usize),
     /// Leave, once the pending operations have finished.
     Quit,
@@ -5218,13 +5215,12 @@ impl Application for App {
                     );
                 }
             }
-            #[cfg(target_os = "macos")]
             Message::ToggleTag(entity_opt, index) => {
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
                 if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
                     && let Some(items) = tab.items_opt_mut()
                 {
-                    crate::tags_macos::toggle_selected(items, index);
+                    crate::tags::toggle_selected(items, index);
                 }
             }
             Message::Preview(entity_opt) => {

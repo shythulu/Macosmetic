@@ -18,6 +18,7 @@ use crate::copy_path::PathVariant;
 use crate::fl;
 use crate::folder_look::{self, FOLDER_COLOURS, FolderLook};
 use crate::key_bind::{menu_key_bind, menu_key_binds};
+use crate::open_bar;
 use crate::quick_bar;
 use crate::tab::{
     self, HeadingOptions, ItemMetadata, Location, LocationMenuAction, SearchLocation, Tab,
@@ -130,40 +131,82 @@ fn date_added_items<T>(
     ]
 }
 
-/// A filled circle in a tag colour, for the Tags submenu. Drawn as RGBA pixels: an SVG
-/// handle built from memory stops the context menu's submenu from opening on macOS.
-#[cfg(target_os = "macos")]
-fn tag_dot(colour: crate::tags::TagColour) -> Option<widget::icon::Handle> {
+/// A filled circle in a tag colour, for the tag row and the Tags submenu. `checked` adds a
+/// white check mark, for a tag every selected item has. Drawn as RGBA pixels: an SVG handle
+/// built from memory stops the context menu's submenu from opening on macOS.
+fn tag_dot(colour: crate::tags::TagColour, checked: bool) -> Option<widget::icon::Handle> {
     // Twice the 14 px menu icon size, so the dot is sharp on Retina displays.
     const SIZE: u32 = 28;
     const RADIUS: f32 = 10.0;
+    // The check mark: two strokes, in pixel coordinates of the 28 px square.
+    const CHECK: [((f32, f32), (f32, f32)); 2] =
+        [((9.0, 14.5), (12.5, 18.0)), ((12.5, 18.0), (19.0, 10.5))];
+    const STROKE: f32 = 1.4;
     let (r, g, b) = colour.rgb()?;
     let centre = SIZE as f32 / 2.0;
     let mut pixels = Vec::with_capacity((SIZE * SIZE * 4) as usize);
     for y in 0..SIZE {
         for x in 0..SIZE {
-            let dx = x as f32 + 0.5 - centre;
-            let dy = y as f32 + 0.5 - centre;
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let (dx, dy) = (px - centre, py - centre);
             // One pixel of linear falloff at the edge for anti-aliasing.
             let coverage = (RADIUS + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
-            pixels.extend_from_slice(&[r, g, b, (coverage * 255.0).round() as u8]);
+            let mark = if checked {
+                CHECK
+                    .iter()
+                    .map(|&(start, end)| segment_distance((px, py), start, end))
+                    .fold(f32::MAX, f32::min)
+            } else {
+                f32::MAX
+            };
+            let white = (STROKE + 0.5 - mark).clamp(0.0, 1.0);
+            let mix =
+                |channel: u8| (f32::from(channel) * (1.0 - white) + 255.0 * white).round() as u8;
+            pixels.extend_from_slice(&[mix(r), mix(g), mix(b), (coverage * 255.0).round() as u8]);
         }
     }
     Some(widget::icon::from_raster_pixels(SIZE, SIZE, pixels))
 }
 
-/// The "Tags" submenu: Finder's seven colour tags, then any other tag on the selection. A tag
-/// every selected item has is checked; clicking it removes it from all, clicking any other
-/// tag adds it to all.
-#[cfg(target_os = "macos")]
-fn tags_menu(sets: &[&[crate::tags::Tag]]) -> menu::Item<TabAction, String> {
-    let children = crate::tags_macos::menu_tags(sets)
+/// Distance from `point` to the segment `start`..`end`.
+fn segment_distance(point: (f32, f32), start: (f32, f32), end: (f32, f32)) -> f32 {
+    let (vx, vy) = (end.0 - start.0, end.1 - start.1);
+    let (wx, wy) = (point.0 - start.0, point.1 - start.1);
+    let t = ((wx * vx + wy * vy) / (vx * vx + vy * vy)).clamp(0.0, 1.0);
+    let (cx, cy) = (start.0 + t * vx - point.0, start.1 + t * vy - point.1);
+    (cx * cx + cy * cy).sqrt()
+}
+
+/// The tag row: Finder's seven colour tags as dots. A press toggles that tag on the
+/// selection, the same as the Tags submenu entry with the same index.
+fn tag_row(tags: &[crate::tags::MenuTag]) -> Element<'static, tab::Message> {
+    let buttons = tags
+        .iter()
+        .enumerate()
+        .take(crate::tags::STANDARD_TAGS.len())
+        .filter_map(|(index, tag)| {
+            Some(quick_bar::RowButton {
+                icon: tag_dot(tag.colour, tag.checked)?,
+                tooltip: tag.name.clone(),
+                on_press: Some(tab::Message::ContextAction(Action::ToggleTag(index))),
+            })
+        })
+        .collect();
+    quick_bar::compact_row_view(buttons)
+}
+
+/// The "Tags" submenu, holding the entries of `tags` from `skip` on. A tag every selected
+/// item has is checked; clicking it removes it from all, clicking any other adds it to all.
+/// With the tag row showing, the submenu keeps only the tags the row has no dot for.
+fn tags_menu(tags: Vec<crate::tags::MenuTag>, skip: usize) -> menu::Item<TabAction, String> {
+    let children = tags
         .into_iter()
         .enumerate()
+        .skip(skip)
         .map(|(index, tag)| {
             let entry = menu::Entry::new(tag.name, TabAction(Action::ToggleTag(index)))
                 .checked(tag.checked);
-            menu::Item::Entry(match tag_dot(tag.colour) {
+            menu::Item::Entry(match tag_dot(tag.colour, false) {
                 Some(handle) => entry.icon(handle),
                 None => entry.reserve_icon(),
             })
@@ -191,6 +234,10 @@ pub fn context_menu<'a>(
     // The quick-action bar at the top of the menu. Empty while the setting is off, or in menus
     // that have no cut/copy/paste entries to lift out of the list.
     let mut quick_items: Vec<quick_bar::Item> = Vec::new();
+    // The Open row under the bar. Empty unless the selection has ways to open it.
+    let mut open_items: Vec<open_bar::OpenAction> = Vec::new();
+    // The tag row and the list position it goes in front of.
+    let mut tag_row_at: Option<(usize, Element<'static, tab::Message>)> = None;
     // Whether the list below the bar should keep its own entry for this action.
     let list_keeps = |quick_items: &[quick_bar::Item], action: quick_bar::QuickAction| {
         !quick_bar::carries(quick_items, action)
@@ -338,12 +385,22 @@ pub fn context_menu<'a>(
                     children.extend(action_items);
                 }
             } else if selected > 0 {
+                if context_quick_bar {
+                    open_items = open_bar::items(open_bar::Context {
+                        selected,
+                        selected_dirs: selected_dir,
+                        app_mode: matches!(tab.mode, tab::Mode::App),
+                    });
+                }
+                let open_keeps = |action| !open_bar::carries(&open_items, action);
                 if selected_dir == 1 && selected == 1 || selected_dir == 0 {
                     children.push(menu_item(fl!("open"), Action::Open));
                 }
                 if selected == 1 {
-                    children.push(menu_item(fl!("menu-open-with"), Action::OpenWith));
-                    if selected_dir == 1 {
+                    if open_keeps(open_bar::OpenAction::With) {
+                        children.push(menu_item(fl!("menu-open-with"), Action::OpenWith));
+                    }
+                    if selected_dir == 1 && open_keeps(open_bar::OpenAction::Terminal) {
                         children.push(menu_item(fl!("open-in-terminal"), Action::OpenTerminal));
                     }
                     // A package opens as a file; this is the way inside it, as in Finder.
@@ -363,11 +420,15 @@ pub fn context_menu<'a>(
                 }
                 // All selected items are directories
                 if selected == selected_dir && matches!(tab.mode, tab::Mode::App) {
-                    children.push(menu_item(fl!("open-in-new-tab"), Action::OpenInNewTab));
-                    children.push(menu_item(
-                        fl!("open-in-new-window"),
-                        Action::OpenInNewWindow,
-                    ));
+                    if open_keeps(open_bar::OpenAction::NewTab) {
+                        children.push(menu_item(fl!("open-in-new-tab"), Action::OpenInNewTab));
+                    }
+                    if open_keeps(open_bar::OpenAction::NewWindow) {
+                        children.push(menu_item(
+                            fl!("open-in-new-window"),
+                            Action::OpenInNewWindow,
+                        ));
+                    }
                 }
                 // Finder is the peer file manager on macOS; there is nothing to hand an
                 // item over to anywhere else.
@@ -433,12 +494,21 @@ pub fn context_menu<'a>(
                 children.push(menu::Item::Divider);
 
                 //TODO: Print?
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 if let Some(sets) = tab
                     .items_opt()
-                    .and_then(|items| crate::tags_macos::selected_tag_sets(items))
+                    .and_then(|items| crate::tags::selected_tag_sets(items))
                 {
-                    children.push(tags_menu(&sets));
+                    let tags = crate::tags::menu_tags(&sets);
+                    if context_quick_bar {
+                        // The row carries the colour tags; the submenu keeps any others.
+                        tag_row_at = Some((children.len(), tag_row(&tags)));
+                        if tags.len() > crate::tags::STANDARD_TAGS.len() {
+                            children.push(tags_menu(tags, crate::tags::STANDARD_TAGS.len()));
+                        }
+                    } else {
+                        children.push(tags_menu(tags, 0));
+                    }
                 }
                 children.push(menu_item(fl!("show-details"), Action::Preview));
                 if selected == selected_dir
@@ -656,14 +726,35 @@ pub fn context_menu<'a>(
         .iter()
         .map(|(key_bind, action)| (menu_key_bind(key_bind), TabAction(*action)))
         .collect();
-    let mut trees = Vec::with_capacity(children.len() + 2);
+    let divider = || {
+        menu::Tree::from(Element::<'static, tab::Message>::from(
+            widget::divider::horizontal::light(),
+        ))
+    };
+    let mut trees = Vec::with_capacity(children.len() + 6);
     if !quick_items.is_empty() {
         trees.push(menu::Tree::from(quick_bar::view(&quick_items, key_binds)));
-        trees.push(menu::Tree::from(Element::<'static, tab::Message>::from(
-            widget::divider::horizontal::light(),
-        )));
     }
-    trees.extend(menu::items(&tab_key_binds, children));
+    if !open_items.is_empty() {
+        trees.push(menu::Tree::from(open_bar::view(&open_items, key_binds)));
+    }
+    if !trees.is_empty() {
+        trees.push(divider());
+    }
+    match tag_row_at {
+        Some((at, row)) => {
+            let after = children.split_off(at);
+            // `menu::items` drops a divider that ends its list, so carry it over by hand.
+            let divided = matches!(children.last(), Some(menu::Item::Divider));
+            trees.extend(menu::items(&tab_key_binds, children));
+            if divided {
+                trees.push(divider());
+            }
+            trees.push(menu::Tree::from(row));
+            trees.extend(menu::items(&tab_key_binds, after));
+        }
+        None => trees.extend(menu::items(&tab_key_binds, children)),
+    }
     trees
 }
 
