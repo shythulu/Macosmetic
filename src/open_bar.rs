@@ -4,12 +4,12 @@
 //! quick-action bar. It shortens the list: an action the row carries leaves the list.
 //!
 //! [`items`] decides which buttons show for a selection. It is a pure function so the rules
-//! can be tested without a window. [`view`] draws them with the quick bar's row widget.
+//! can be tested without a window. [`row`] turns them into a row for the quick bar's stack.
 
 use std::collections::HashMap;
 
+use cosmic::widget;
 use cosmic::widget::menu::key_bind::KeyBind;
-use cosmic::{Element, widget};
 
 use crate::app::Action;
 use crate::fl;
@@ -103,10 +103,7 @@ pub fn carries(items: &[OpenAction], action: OpenAction) -> bool {
 }
 
 /// The row as a menu row. Each press runs the same message as the list entry would.
-pub fn view(
-    items: &[OpenAction],
-    key_binds: &HashMap<KeyBind, Action>,
-) -> Element<'static, tab::Message> {
+pub fn row(items: &[OpenAction], key_binds: &HashMap<KeyBind, Action>) -> quick_bar::Row {
     let buttons = items
         .iter()
         .map(|item| {
@@ -124,7 +121,7 @@ pub fn view(
             }
         })
         .collect();
-    quick_bar::row_view(buttons)
+    quick_bar::Row::new(buttons)
 }
 
 #[cfg(test)]

@@ -148,10 +148,7 @@ pub fn carries(items: &[Item], action: QuickAction) -> bool {
 }
 
 /// The bar as a menu row. Each press runs the same message as the list entry would.
-pub fn view(
-    items: &[Item],
-    key_binds: &HashMap<KeyBind, Action>,
-) -> Element<'static, tab::Message> {
+pub fn row(items: &[Item], key_binds: &HashMap<KeyBind, Action>) -> Row {
     let buttons = items
         .iter()
         .map(|item| {
@@ -165,7 +162,7 @@ pub fn view(
             }
         })
         .collect();
-    row_view(buttons)
+    Row::new(buttons)
 }
 
 /// One icon button of a menu row.
@@ -177,28 +174,65 @@ pub struct RowButton {
     pub on_press: Option<tab::Message>,
 }
 
-/// A row of icon buttons for a context menu, with a self-drawn tooltip. The quick bar, the
-/// Open row and the tag row all use it, so they share height, inset and spacing.
-pub fn row_view(buttons: Vec<RowButton>) -> Element<'static, tab::Message> {
-    row_view_padded(buttons, cosmic::theme::spacing().space_xxs)
+/// A row of icon buttons for the top of a context menu.
+pub struct Row {
+    buttons: Vec<RowButton>,
+    /// Space around each icon inside its button.
+    padding: u16,
 }
 
-/// [`row_view`] with tighter buttons, for a row with more buttons than the menu is wide
-/// for at the normal size: the tag row's seven dots.
-pub fn compact_row_view(buttons: Vec<RowButton>) -> Element<'static, tab::Message> {
-    row_view_padded(buttons, cosmic::theme::spacing().space_xxxs)
+impl Row {
+    pub fn new(buttons: Vec<RowButton>) -> Self {
+        Self {
+            buttons,
+            padding: cosmic::theme::spacing().space_xxs,
+        }
+    }
+
+    /// Tighter buttons, for a row with more buttons than the menu is wide for at the normal
+    /// size: the tag row's seven dots.
+    pub fn compact(buttons: Vec<RowButton>) -> Self {
+        Self {
+            buttons,
+            padding: cosmic::theme::spacing().space_xxxs,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buttons.is_empty()
+    }
 }
 
-fn row_view_padded(buttons: Vec<RowButton>, padding: u16) -> Element<'static, tab::Message> {
-    let mut row = widget::row::with_capacity(buttons.len())
+/// The icon rows as one menu entry, with a self-drawn tooltip for the hovered button.
+///
+/// The rows are one widget, not one menu entry each, so the tooltip is painted after every
+/// row. With separate entries, a tooltip reaching into the next row was painted over by it.
+pub fn stack_view(rows: Vec<Row>) -> Element<'static, tab::Message> {
+    let mut column = widget::column::with_capacity(rows.len());
+    let mut tooltips = Vec::with_capacity(rows.len());
+    for row in rows {
+        let (content, labels) = row_content(row);
+        column = column.push(content);
+        tooltips.push(labels);
+    }
+    QuickBar {
+        content: column.into(),
+        tooltips,
+    }
+    .into()
+}
+
+fn row_content(row: Row) -> (Element<'static, tab::Message>, Vec<String>) {
+    let padding = row.padding;
+    let mut buttons = widget::row::with_capacity(row.buttons.len())
         .spacing(GAP as u16)
         .align_y(alignment::Vertical::Center);
-    let mut tooltips = Vec::with_capacity(buttons.len());
-    for button in buttons {
+    let mut tooltips = Vec::with_capacity(row.buttons.len());
+    for button in row.buttons {
         match button.on_press {
             Some(message) => {
                 let icon = widget::icon::icon(button.icon).size(16);
-                row = row.push(
+                buttons = buttons.push(
                     widget::button::custom(icon)
                         .class(cosmic::theme::Button::Icon)
                         .padding(padding)
@@ -210,7 +244,7 @@ fn row_view_padded(buttons: Vec<RowButton>, padding: u16) -> Element<'static, ta
                 let icon = widget::icon::icon(button.icon)
                     .size(16)
                     .opacity(DISABLED_OPACITY);
-                row = row.push(
+                buttons = buttons.push(
                     widget::button::custom(icon)
                         .class(cosmic::theme::Button::Icon)
                         .padding(padding),
@@ -219,16 +253,45 @@ fn row_view_padded(buttons: Vec<RowButton>, padding: u16) -> Element<'static, ta
         }
         tooltips.push(button.tooltip);
     }
-    let content = widget::container(row)
+    let content = widget::container(buttons)
         .padding([0, BAR_INSET])
         .height(Length::Fixed(BAR_HEIGHT))
         .width(Length::Fill)
         .align_y(alignment::Vertical::Center);
-    QuickBar {
-        content: content.into(),
-        tooltips,
+    (content.into(), tooltips)
+}
+
+/// Where a tooltip of `size` goes, for the button `anchor` in row `hovered` of a stack of
+/// rows whose bounds are `rows`. The stack is painted before the tooltip, so covering other
+/// rows is fine; covering what comes after the stack is not, and neither is leaving it at
+/// the top, where a popup window ends.
+///
+/// 1. Any row but the first: above the row, centred on the button.
+/// 2. The first of several rows: below it, centred on the button.
+/// 3. A row on its own: beside the button, on the right, or on the left if it does not fit.
+fn tooltip_origin(rows: &[Rectangle], hovered: usize, anchor: Rectangle, size: Size) -> Point {
+    let stack = rows
+        .iter()
+        .copied()
+        .reduce(|a, b| a.union(&b))
+        .unwrap_or(anchor);
+    let row = rows.get(hovered).copied().unwrap_or(anchor);
+    let centred_x = (anchor.center_x() - size.width / 2.0)
+        .min(stack.x + stack.width - size.width)
+        .max(stack.x);
+    if hovered > 0 {
+        Point::new(centred_x, row.y - GAP - size.height)
+    } else if rows.len() > 1 {
+        Point::new(centred_x, row.y + row.height + GAP)
+    } else {
+        let right = anchor.x + anchor.width + GAP;
+        let x = if right + size.width <= stack.x + stack.width {
+            right
+        } else {
+            (anchor.x - GAP - size.width).max(stack.x)
+        };
+        Point::new(x, row.center_y() - size.height / 2.0)
     }
-    .into()
 }
 
 /// "Cut  ⌘X": a button's name and, when `target` is bound, its shortcut in menu notation.
@@ -244,34 +307,42 @@ pub fn tooltip(label: String, target: Action, key_binds: &HashMap<KeyBind, Actio
     }
 }
 
-/// The bar's row plus a self-drawn tooltip for the hovered button.
+/// The stacked rows plus a self-drawn tooltip for the hovered button.
 ///
-/// Everything is delegated to the wrapped row. `draw` adds the tooltip: the menu overlay
-/// paints its rows in order and never collects their overlays, so the label has to be
-/// drawn here, above the bar where no later row can cover it.
+/// Everything is delegated to the wrapped column. `draw` adds the tooltip: the menu never
+/// collects its rows' overlays, so the label is drawn here, after every row.
 struct QuickBar<Message> {
     content: Element<'static, Message>,
-    /// One per button of the row, in order.
-    tooltips: Vec<String>,
+    /// Per row, one per button, in order.
+    tooltips: Vec<Vec<String>>,
 }
 
 impl<Message> QuickBar<Message> {
-    /// The row's child whose bounds hold the cursor, with those bounds.
-    fn hovered(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<(usize, Rectangle)> {
+    /// The button under the cursor: its row, its index in the row, and its bounds.
+    fn hovered(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) -> Option<(usize, usize, Rectangle)> {
         let position = cursor.position()?;
-        // container -> row -> buttons
-        let row = layout.children().next()?;
-        row.children()
-            .enumerate()
-            .find(|(_, child)| child.bounds().contains(position))
-            .map(|(index, child)| (index, child.bounds()))
+        // column -> container per row -> row -> buttons
+        layout.children().enumerate().find_map(|(row, container)| {
+            container
+                .children()
+                .next()?
+                .children()
+                .enumerate()
+                .find(|(_, button)| button.bounds().contains(position))
+                .map(|(index, button)| (row, index, button.bounds()))
+        })
     }
 
     fn draw_tooltip(
         &self,
         renderer: &mut Renderer,
         theme: &Theme,
-        bar: Rectangle,
+        rows: &[Rectangle],
+        hovered: usize,
         anchor: Rectangle,
         label: &str,
     ) {
@@ -295,15 +366,7 @@ impl<Message> QuickBar<Message> {
             measured.height + 2.0 * TOOLTIP_PADDING,
         );
 
-        // Centred on the button, above the bar; below it when the bar sits at the top edge.
-        let x = (anchor.center_x() - size.width / 2.0).max(0.0);
-        let above = bar.y - GAP - size.height;
-        let y = if above >= 0.0 {
-            above
-        } else {
-            bar.y + bar.height + GAP
-        };
-        let bounds = Rectangle::new(Point::new(x, y), size);
+        let bounds = Rectangle::new(tooltip_origin(rows, hovered, anchor, size), size);
 
         let cosmic = theme.cosmic();
         renderer.fill_quad(
@@ -432,10 +495,11 @@ impl<Message: Clone + 'static> Widget<Message, Theme, Renderer> for QuickBar<Mes
             cursor,
             viewport,
         );
-        if let Some((index, anchor)) = self.hovered(layout, cursor)
-            && let Some(label) = self.tooltips.get(index)
+        if let Some((row, index, anchor)) = self.hovered(layout, cursor)
+            && let Some(label) = self.tooltips.get(row).and_then(|row| row.get(index))
         {
-            self.draw_tooltip(renderer, theme, layout.bounds(), anchor, label);
+            let rows: Vec<Rectangle> = layout.children().map(|row| row.bounds()).collect();
+            self.draw_tooltip(renderer, theme, &rows, row, anchor, label);
         }
     }
 
@@ -548,6 +612,53 @@ mod tests {
         assert!(carries(&bar, QuickAction::Cut));
         assert!(carries(&bar, QuickAction::Paste));
         assert!(!carries(&bar, QuickAction::Rename));
+    }
+
+    fn rect(x: f32, y: f32, width: f32, height: f32) -> Rectangle {
+        Rectangle::new(Point::new(x, y), Size::new(width, height))
+    }
+
+    /// Three 40 px rows, 300 wide, as in a file's context menu.
+    fn three_rows() -> Vec<Rectangle> {
+        (0..3)
+            .map(|i| rect(0.0, 40.0 * i as f32, 300.0, 40.0))
+            .collect()
+    }
+
+    const TIP: Size = Size::new(60.0, 30.0);
+
+    #[test]
+    fn tooltip_of_a_lower_row_goes_above_it() {
+        let at = tooltip_origin(&three_rows(), 1, rect(100.0, 48.0, 24.0, 24.0), TIP);
+        assert_eq!(at, Point::new(82.0, 40.0 - GAP - 30.0));
+    }
+
+    #[test]
+    fn tooltip_of_the_top_row_goes_below_it_when_rows_follow() {
+        let at = tooltip_origin(&three_rows(), 0, rect(100.0, 8.0, 24.0, 24.0), TIP);
+        assert_eq!(at, Point::new(82.0, 40.0 + GAP));
+    }
+
+    #[test]
+    fn tooltip_stays_inside_the_stack_horizontally() {
+        let at = tooltip_origin(&three_rows(), 2, rect(2.0, 88.0, 24.0, 24.0), TIP);
+        assert_eq!(at.x, 0.0);
+        let at = tooltip_origin(&three_rows(), 2, rect(290.0, 88.0, 24.0, 24.0), TIP);
+        assert_eq!(at.x, 240.0);
+    }
+
+    #[test]
+    fn tooltip_of_a_lone_row_goes_beside_the_button() {
+        let row = [rect(0.0, 0.0, 300.0, 40.0)];
+        let at = tooltip_origin(&row, 0, rect(100.0, 8.0, 24.0, 24.0), TIP);
+        assert_eq!(at, Point::new(124.0 + GAP, 5.0));
+    }
+
+    #[test]
+    fn tooltip_of_a_lone_row_flips_left_at_the_edge() {
+        let row = [rect(0.0, 0.0, 300.0, 40.0)];
+        let at = tooltip_origin(&row, 0, rect(250.0, 8.0, 24.0, 24.0), TIP);
+        assert_eq!(at, Point::new(250.0 - GAP - 60.0, 5.0));
     }
 
     #[test]

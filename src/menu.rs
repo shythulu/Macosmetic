@@ -20,6 +20,7 @@ use crate::folder_look::{self, FOLDER_COLOURS, FolderLook};
 use crate::key_bind::{menu_key_bind, menu_key_binds};
 use crate::open_bar;
 use crate::quick_bar;
+use crate::share_bar;
 use crate::tab::{
     self, HeadingOptions, ItemMetadata, Location, LocationMenuAction, SearchLocation, Tab,
 };
@@ -179,7 +180,7 @@ fn segment_distance(point: (f32, f32), start: (f32, f32), end: (f32, f32)) -> f3
 
 /// The tag row: Finder's seven colour tags as dots. A press toggles that tag on the
 /// selection, the same as the Tags submenu entry with the same index.
-fn tag_row(tags: &[crate::tags::MenuTag]) -> Element<'static, tab::Message> {
+fn tag_row(tags: &[crate::tags::MenuTag]) -> quick_bar::Row {
     let buttons = tags
         .iter()
         .enumerate()
@@ -192,7 +193,7 @@ fn tag_row(tags: &[crate::tags::MenuTag]) -> Element<'static, tab::Message> {
             })
         })
         .collect();
-    quick_bar::compact_row_view(buttons)
+    quick_bar::Row::compact(buttons)
 }
 
 /// The "Tags" submenu, holding the entries of `tags` from `skip` on. A tag every selected
@@ -236,8 +237,10 @@ pub fn context_menu<'a>(
     let mut quick_items: Vec<quick_bar::Item> = Vec::new();
     // The Open row under the bar. Empty unless the selection has ways to open it.
     let mut open_items: Vec<open_bar::OpenAction> = Vec::new();
-    // The tag row and the list position it goes in front of.
-    let mut tag_row_at: Option<(usize, Element<'static, tab::Message>)> = None;
+    // The share row under it: Open, Share, AirDrop, Reveal in Finder.
+    let mut share_items: Vec<share_bar::ShareAction> = Vec::new();
+    // The tag row, under the share row.
+    let mut tag_row_element: Option<quick_bar::Row> = None;
     // Whether the list below the bar should keep its own entry for this action.
     let list_keeps = |quick_items: &[quick_bar::Item], action: quick_bar::QuickAction| {
         !quick_bar::carries(quick_items, action)
@@ -392,8 +395,14 @@ pub fn context_menu<'a>(
                         app_mode: matches!(tab.mode, tab::Mode::App),
                     });
                 }
+                if context_quick_bar {
+                    share_items = share_bar::items(share_bar::Context::new(selected, selected_dir));
+                }
                 let open_keeps = |action| !open_bar::carries(&open_items, action);
-                if selected_dir == 1 && selected == 1 || selected_dir == 0 {
+                let share_keeps = |action| !share_bar::carries(&share_items, action);
+                if (selected_dir == 1 && selected == 1 || selected_dir == 0)
+                    && share_keeps(share_bar::ShareAction::Open)
+                {
                     children.push(menu_item(fl!("open"), Action::Open));
                 }
                 if selected == 1 {
@@ -434,9 +443,15 @@ pub fn context_menu<'a>(
                 // item over to anywhere else.
                 #[cfg(target_os = "macos")]
                 {
-                    children.push(menu_item(fl!("reveal-in-finder"), Action::RevealInFinder));
-                    children.push(menu_item(fl!("share"), Action::Share));
-                    children.push(menu_item(fl!("airdrop"), Action::AirDrop));
+                    if share_keeps(share_bar::ShareAction::Reveal) {
+                        children.push(menu_item(fl!("reveal-in-finder"), Action::RevealInFinder));
+                    }
+                    if share_keeps(share_bar::ShareAction::Share) {
+                        children.push(menu_item(fl!("share"), Action::Share));
+                    }
+                    if share_keeps(share_bar::ShareAction::AirDrop) {
+                        children.push(menu_item(fl!("airdrop"), Action::AirDrop));
+                    }
                 }
                 let action_items = context_action_items(selected, selected_dir);
                 if !action_items.is_empty() {
@@ -502,7 +517,7 @@ pub fn context_menu<'a>(
                     let tags = crate::tags::menu_tags(&sets);
                     if context_quick_bar {
                         // The row carries the colour tags; the submenu keeps any others.
-                        tag_row_at = Some((children.len(), tag_row(&tags)));
+                        tag_row_element = Some(tag_row(&tags));
                         if tags.len() > crate::tags::STANDARD_TAGS.len() {
                             children.push(tags_menu(tags, crate::tags::STANDARD_TAGS.len()));
                         }
@@ -731,30 +746,27 @@ pub fn context_menu<'a>(
             widget::divider::horizontal::light(),
         ))
     };
-    let mut trees = Vec::with_capacity(children.len() + 6);
-    if !quick_items.is_empty() {
-        trees.push(menu::Tree::from(quick_bar::view(&quick_items, key_binds)));
-    }
-    if !open_items.is_empty() {
-        trees.push(menu::Tree::from(open_bar::view(&open_items, key_binds)));
+    let mut trees = Vec::with_capacity(children.len() + 2);
+    let rows: Vec<quick_bar::Row> = [
+        quick_bar::row(&quick_items, key_binds),
+        open_bar::row(&open_items, key_binds),
+        share_bar::row(&share_items, key_binds),
+    ]
+    .into_iter()
+    .chain(tag_row_element)
+    .filter(|row| !row.is_empty())
+    .collect();
+    if !rows.is_empty() {
+        trees.push(menu::Tree::from(quick_bar::stack_view(rows)));
     }
     if !trees.is_empty() {
         trees.push(divider());
-    }
-    match tag_row_at {
-        Some((at, row)) => {
-            let after = children.split_off(at);
-            // `menu::items` drops a divider that ends its list, so carry it over by hand.
-            let divided = matches!(children.last(), Some(menu::Item::Divider));
-            trees.extend(menu::items(&tab_key_binds, children));
-            if divided {
-                trees.push(divider());
-            }
-            trees.push(menu::Tree::from(row));
-            trees.extend(menu::items(&tab_key_binds, after));
+        // The rows may have taken every entry above the list's first divider.
+        while matches!(children.first(), Some(menu::Item::Divider)) {
+            children.remove(0);
         }
-        None => trees.extend(menu::items(&tab_key_binds, children)),
     }
+    trees.extend(menu::items(&tab_key_binds, children));
     trees
 }
 

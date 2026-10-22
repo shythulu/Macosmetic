@@ -55,6 +55,7 @@ pub(crate) mod quicklook_macos;
 mod share_macos;
 mod open_bar;
 mod quick_bar;
+mod share_bar;
 mod spawn_detached;
 #[cfg(target_os = "macos")]
 pub(crate) mod spotlight_macos;
