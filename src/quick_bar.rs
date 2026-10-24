@@ -368,7 +368,13 @@ impl<Message> QuickBar<Message> {
 
         let bounds = Rectangle::new(tooltip_origin(rows, hovered, anchor, size), size);
 
-        let cosmic = theme.cosmic();
+        // The theme's primary container, as a popover would use, solid even when the
+        // theme is transparent: the opaque variant, with alpha forced to 1.
+        let component = &theme.cosmic().primary(false).component;
+        let opaque = |colour| Color {
+            a: 1.0,
+            ..Color::from(colour)
+        };
         // A layer of its own: within one layer iced draws every quad before any icon, so
         // a tooltip background in the rows' layer sat under the buttons' icons.
         renderer.with_layer(bounds, |renderer| {
@@ -376,16 +382,13 @@ impl<Message> QuickBar<Message> {
                 Quad {
                     bounds,
                     border: Border {
-                        radius: cosmic.radius_s().into(),
-                        ..Default::default()
+                        radius: theme.cosmic().radius_s().into(),
+                        width: 1.0,
+                        color: opaque(component.divider),
                     },
                     ..Default::default()
                 },
-                // Opaque: palette colours can carry alpha.
-                Color {
-                    a: 1.0,
-                    ..Color::from(cosmic.palette.neutral_2)
-                },
+                opaque(component.base),
             );
             renderer.fill_text(
                 text::Text {
@@ -393,7 +396,7 @@ impl<Message> QuickBar<Message> {
                     ..text
                 },
                 Point::new(bounds.x + TOOLTIP_PADDING, bounds.center_y()),
-                Color::from(cosmic.on_bg_color()),
+                opaque(component.on),
                 bounds,
             );
         });
