@@ -369,30 +369,34 @@ impl<Message> QuickBar<Message> {
         let bounds = Rectangle::new(tooltip_origin(rows, hovered, anchor, size), size);
 
         let cosmic = theme.cosmic();
-        renderer.fill_quad(
-            Quad {
-                bounds,
-                border: Border {
-                    radius: cosmic.radius_s().into(),
+        // A layer of its own: within one layer iced draws every quad before any icon, so
+        // a tooltip background in the rows' layer sat under the buttons' icons.
+        renderer.with_layer(bounds, |renderer| {
+            renderer.fill_quad(
+                Quad {
+                    bounds,
+                    border: Border {
+                        radius: cosmic.radius_s().into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            },
-            // Opaque: palette colours can carry alpha, and the tooltip sits on other buttons.
-            Color {
-                a: 1.0,
-                ..Color::from(cosmic.palette.neutral_2)
-            },
-        );
-        renderer.fill_text(
-            text::Text {
-                bounds: Size::new(measured.width, measured.height),
-                ..text
-            },
-            Point::new(bounds.x + TOOLTIP_PADDING, bounds.center_y()),
-            Color::from(cosmic.on_bg_color()),
-            bounds,
-        );
+                // Opaque: palette colours can carry alpha.
+                Color {
+                    a: 1.0,
+                    ..Color::from(cosmic.palette.neutral_2)
+                },
+            );
+            renderer.fill_text(
+                text::Text {
+                    bounds: Size::new(measured.width, measured.height),
+                    ..text
+                },
+                Point::new(bounds.x + TOOLTIP_PADDING, bounds.center_y()),
+                Color::from(cosmic.on_bg_color()),
+                bounds,
+            );
+        });
     }
 }
 
