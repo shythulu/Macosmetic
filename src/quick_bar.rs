@@ -378,7 +378,11 @@ impl<Message> QuickBar<Message> {
                 },
                 ..Default::default()
             },
-            Color::from(cosmic.palette.neutral_2),
+            // Opaque: palette colours can carry alpha, and the tooltip sits on other buttons.
+            Color {
+                a: 1.0,
+                ..Color::from(cosmic.palette.neutral_2)
+            },
         );
         renderer.fill_text(
             text::Text {
