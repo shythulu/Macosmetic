@@ -30,14 +30,14 @@ app="$target_dir/macos/$app_name.app"
 icon_theme_dir=${COSMIC_ICON_THEME_DIR:-$HOME/.local/share/icons/Cosmic}
 mime_dir=${SHARED_MIME_INFO_DIR:-/opt/homebrew/share/mime}
 
-# The release build. The default features are the macOS set.
-if [ ! -x "$binary" ]; then
-    echo "==> building $bin_name (release)"
-    (
-        cd -- "$repo_root"
-        CARGO_TARGET_DIR="$target_dir" cargo build --release
-    )
-fi
+# The release build. The default features are the macOS set. Always run it: cargo does
+# nothing when the binary is current, and skipping it when a binary exists bundled stale
+# builds.
+echo "==> building $bin_name (release)"
+(
+    cd -- "$repo_root"
+    CARGO_TARGET_DIR="$target_dir" cargo build --release
+) || exit 1
 
 echo "==> laying out $app"
 rm -rf -- "$app"
