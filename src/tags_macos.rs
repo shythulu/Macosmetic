@@ -26,82 +26,7 @@
 use std::io;
 use std::path::Path;
 
-use crate::tab::{Item, ItemMetadata};
-use crate::tags::{TAGS_XATTR, Tag, TagColour, Xattr, read_xattr};
-
-/// Finder's seven standard tags, in Finder's menu order.
-pub const STANDARD_TAGS: [(&str, TagColour); 7] = [
-    ("Red", TagColour::Red),
-    ("Orange", TagColour::Orange),
-    ("Yellow", TagColour::Yellow),
-    ("Green", TagColour::Green),
-    ("Blue", TagColour::Blue),
-    ("Purple", TagColour::Purple),
-    ("Gray", TagColour::Grey),
-];
-
-/// One entry of the Tags submenu.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MenuTag {
-    pub name: String,
-    pub colour: TagColour,
-    /// Every selected item has this tag.
-    pub checked: bool,
-}
-
-/// What a click on a menu tag does to the selection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Toggle {
-    Add,
-    Remove,
-}
-
-impl MenuTag {
-    /// If every selected item has the tag, the click removes it from all. Otherwise it adds
-    /// it to the items that lack it.
-    pub fn toggle(&self) -> Toggle {
-        if self.checked {
-            Toggle::Remove
-        } else {
-            Toggle::Add
-        }
-    }
-}
-
-/// The Tags submenu for a selection, one tag list per selected item: the seven standard
-/// tags, then every other tag on the selection in first-seen order. A non-standard tag
-/// takes the first colour stored for it on the selection.
-pub fn menu_tags(selection: &[&[Tag]]) -> Vec<MenuTag> {
-    let all_have = |name: &str| {
-        !selection.is_empty()
-            && selection
-                .iter()
-                .all(|tags| tags.iter().any(|tag| tag.name == name))
-    };
-    let mut menu: Vec<MenuTag> = STANDARD_TAGS
-        .iter()
-        .map(|(name, colour)| MenuTag {
-            name: (*name).to_string(),
-            colour: *colour,
-            checked: all_have(name),
-        })
-        .collect();
-    for tag in selection.iter().flat_map(|tags| tags.iter()) {
-        match menu.iter_mut().find(|entry| entry.name == tag.name) {
-            Some(entry) => {
-                if entry.colour == TagColour::None {
-                    entry.colour = tag.colour;
-                }
-            }
-            None => menu.push(MenuTag {
-                name: tag.name.clone(),
-                colour: tag.colour,
-                checked: all_have(&tag.name),
-            }),
-        }
-    }
-    menu
-}
+use crate::tags::{TAGS_XATTR, Tag, TagColour, Toggle, Xattr, read_xattr};
 
 /// The tag name of one stored entry, parsed the way the read path parses it.
 fn entry_name(entry: &plist::Value) -> Option<String> {
@@ -153,52 +78,6 @@ pub fn apply(path: &Path, name: &str, colour: TagColour, toggle: Toggle) -> io::
     Ok(changed)
 }
 
-/// Whether an item can carry tags here: a real path, not a trash entry.
-fn taggable(item: &Item) -> bool {
-    item.path_opt().is_some() && !matches!(item.metadata, ItemMetadata::Trash { .. })
-}
-
-/// The tag lists of the selected items, or `None` if nothing is selected or any selected
-/// item cannot carry tags. The menu and the click handler both build the list from this,
-/// so a menu index means the same tag in both.
-pub fn selected_tag_sets(items: &[Item]) -> Option<Vec<&[Tag]>> {
-    let mut sets = Vec::new();
-    for item in items.iter().filter(|item| item.selected) {
-        if !taggable(item) {
-            return None;
-        }
-        sets.push(item.tags.as_slice());
-    }
-    (!sets.is_empty()).then_some(sets)
-}
-
-/// Applies Tags submenu entry `index` to the selected items, then re-reads their tags from
-/// disk so the dots match what was written. Failures are logged per file; the other files
-/// still change.
-pub fn toggle_selected(items: &mut [Item], index: usize) {
-    let Some(tag) =
-        selected_tag_sets(items).and_then(|sets| menu_tags(&sets).into_iter().nth(index))
-    else {
-        return;
-    };
-    let toggle = tag.toggle();
-    for item in items.iter_mut().filter(|item| item.selected) {
-        let Some(path) = item.path_opt().cloned() else {
-            continue;
-        };
-        if let Err(err) = apply(&path, &tag.name, tag.colour, toggle) {
-            log::warn!(
-                "failed to {toggle:?} tag {:?} on {}: {err}",
-                tag.name,
-                path.display()
-            );
-        }
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            item.tags = crate::tags::read(&path, &metadata);
-        }
-    }
-}
-
 fn write_entries(path: &Path, entries: Vec<plist::Value>) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
 
@@ -239,6 +118,7 @@ fn write_entries(path: &Path, entries: Vec<plist::Value>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tags::menu_tags;
 
     fn tags(entries: &[&str]) -> Vec<Tag> {
         entries.iter().copied().map(Tag::from_entry).collect()
@@ -272,42 +152,6 @@ mod tests {
         let path = dir.path().join(name);
         std::fs::write(&path, b"x").unwrap();
         path
-    }
-
-    #[test]
-    fn menu_lists_standard_tags_then_others() {
-        let a = tags(&["Work\n6", "Red\n6"]);
-        let b = tags(&["Red\n6", "Home\n4", "Work\n6"]);
-        let menu = menu_tags(&[&a, &b]);
-        let names: Vec<_> = menu.iter().map(|tag| tag.name.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray", "Work", "Home"
-            ]
-        );
-        let checked: Vec<_> = menu
-            .iter()
-            .filter(|tag| tag.checked)
-            .map(|tag| tag.name.as_str())
-            .collect();
-        assert_eq!(checked, ["Red", "Work"]);
-        assert_eq!(menu[7].colour, TagColour::Red);
-        assert_eq!(menu[8].colour, TagColour::Blue);
-    }
-
-    #[test]
-    fn toggle_removes_only_when_all_have_it() {
-        let red = tags(&["Red\n6"]);
-        let none = tags(&[]);
-        // All have Red: remove from all.
-        assert_eq!(menu_tags(&[&red, &red])[0].toggle(), Toggle::Remove);
-        // Mixed: add to all.
-        assert_eq!(menu_tags(&[&red, &none])[0].toggle(), Toggle::Add);
-        // None have it: add.
-        assert_eq!(menu_tags(&[&none, &none])[0].toggle(), Toggle::Add);
-        // Empty selection checks nothing.
-        assert!(menu_tags(&[]).iter().all(|tag| !tag.checked));
     }
 
     #[test]

@@ -55,7 +55,9 @@ pub mod operation;
 pub(crate) mod quicklook_macos;
 #[cfg(target_os = "macos")]
 mod share_macos;
+mod open_bar;
 mod quick_bar;
+mod share_bar;
 mod spawn_detached;
 #[cfg(target_os = "macos")]
 pub(crate) mod spotlight_macos;
@@ -64,6 +66,7 @@ pub mod tab;
 pub mod tags;
 #[cfg(target_os = "macos")]
 pub(crate) mod tags_macos;
+mod tags_xdg;
 mod theme_catalog;
 mod thumbnail_cacher;
 mod thumbnailer;

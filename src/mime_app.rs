@@ -336,6 +336,18 @@ impl MimeAppCache {
         mime_app_cache
     }
 
+    /// The apps the context menu's "Open with" submenu lists for `mime`, in [`menu_order`].
+    /// The menu and its click handler both build the list here, so an entry's index names
+    /// the same app in both.
+    pub fn menu_apps(&self, mime_type: &Mime) -> Vec<&Arc<MimeApp>> {
+        menu_order(
+            self.get_apps_for_mime(mime_type, false)
+                .into_iter()
+                .map(|(app, _)| (app, app.is_default(mime_type)))
+                .collect(),
+        )
+    }
+
     pub fn get_apps_for_mime(
         &self,
         mime_type: &Mime,
@@ -1160,5 +1172,53 @@ mod tests {
                 .zip(command.get_args())
                 .all(|(&expected, actual)| expected == actual.to_string_lossy())
         );
+    }
+}
+
+/// How many apps the context menu's "Open with" submenu lists before "Other…".
+pub const MENU_APPS_MAX: usize = 12;
+
+/// The order of the "Open with" submenu: the default app first, then the others in the
+/// order they matched, at most [`MENU_APPS_MAX`]. Each entry is an app and whether it is
+/// the default for the type.
+pub fn menu_order<T>(apps: Vec<(T, bool)>) -> Vec<T> {
+    let (defaults, others): (Vec<_>, Vec<_>) =
+        apps.into_iter().partition(|(_, is_default)| *is_default);
+    defaults
+        .into_iter()
+        .chain(others)
+        .map(|(app, _)| app)
+        .take(MENU_APPS_MAX)
+        .collect()
+}
+
+#[cfg(test)]
+mod menu_order_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_app_comes_first() {
+        let apps = vec![("Preview", false), ("Photos", true), ("GIMP", false)];
+        assert_eq!(menu_order(apps), ["Photos", "Preview", "GIMP"]);
+    }
+
+    #[test]
+    fn without_a_default_the_match_order_stays() {
+        let apps = vec![("TextEdit", false), ("Zed", false)];
+        assert_eq!(menu_order(apps), ["TextEdit", "Zed"]);
+    }
+
+    #[test]
+    fn the_list_stops_at_the_maximum() {
+        let apps: Vec<_> = (0..20).map(|i| (i, i == 15)).collect();
+        let ordered = menu_order(apps);
+        assert_eq!(ordered.len(), MENU_APPS_MAX);
+        assert_eq!(ordered[0], 15, "the default survives the cut");
+        assert_eq!(ordered[1..], (0..11).collect::<Vec<_>>()[..]);
+    }
+
+    #[test]
+    fn no_apps_no_entries() {
+        assert!(menu_order(Vec::<((), bool)>::new()).is_empty());
     }
 }

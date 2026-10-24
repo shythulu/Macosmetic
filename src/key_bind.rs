@@ -673,8 +673,7 @@ macro_rules! unit_actions {
                 | Action::SetFolderColour(..)
                 | Action::SetSort(..)
                 | Action::ToggleSort(..) => None,
-                #[cfg(target_os = "macos")]
-                Action::ToggleTag(..) => None,
+                Action::ToggleTag(..) | Action::OpenWithApp(..) => None,
                 #[cfg(feature = "desktop")]
                 Action::ExecEntryAction(..) => None,
             }

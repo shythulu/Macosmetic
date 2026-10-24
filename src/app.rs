@@ -241,6 +241,9 @@ pub enum Action {
     OpenItemLocation,
     OpenTerminal,
     OpenWith,
+    /// Open the selection with entry N of the Open with submenu; see
+    /// `MimeAppCache::menu_apps`.
+    OpenWithApp(usize),
     RunContextAction(usize),
     Paste,
     PermanentlyDelete,
@@ -271,8 +274,7 @@ pub enum Action {
     ToggleShowHidden,
     ToggleSort(HeadingOptions),
     ToggleStatusBar,
-    /// Toggle entry N of the Tags submenu on the selection; see `tags_macos::menu_tags`.
-    #[cfg(target_os = "macos")]
+    /// Toggle entry N of the Tags submenu on the selection; see `tags::menu_tags`.
     ToggleTag(usize),
     Undo,
     Redo,
@@ -333,6 +335,7 @@ impl Action {
             Self::OpenItemLocation => Message::OpenItemLocation(entity_opt),
             Self::OpenTerminal => Message::OpenTerminal(entity_opt),
             Self::OpenWith => Message::OpenWithDialog(entity_opt),
+            Self::OpenWithApp(index) => Message::OpenWithApp(entity_opt, *index),
             Self::RunContextAction(action) => {
                 Message::TabMessage(entity_opt, tab::Message::RunContextAction(*action))
             }
@@ -367,7 +370,6 @@ impl Action {
             Self::ToggleFoldersFirst => Message::ToggleFoldersFirst,
             Self::ToggleShowHidden => Message::ToggleShowHidden,
             Self::ToggleStatusBar => Message::StatusBar(status_bar::Message::Toggle),
-            #[cfg(target_os = "macos")]
             Self::ToggleTag(index) => Message::ToggleTag(entity_opt, *index),
             Self::ToggleSort(sort) => {
                 Message::TabMessage(entity_opt, tab::Message::ToggleSort(*sort))
@@ -544,6 +546,7 @@ pub enum Message {
     OpenItemLocation(Option<Entity>),
     OpenWithBrowse,
     OpenWithDialog(Option<Entity>),
+    OpenWithApp(Option<Entity>, usize),
     OpenWithSelection(usize),
     OpenWithSearchClear,
     #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
@@ -572,7 +575,6 @@ pub enum Message {
     PendingPauseAll(bool),
     PermanentlyDelete(Option<Entity>),
     Preview(Option<Entity>),
-    #[cfg(target_os = "macos")]
     ToggleTag(Option<Entity>, usize),
     /// Leave, once the pending operations have finished.
     Quit,
@@ -1844,6 +1846,34 @@ impl App {
         };
         self.core.set_main_window_id(None);
         Task::batch([window::close(window_id), maybe_exit])
+    }
+
+    /// Opens `path` with `app`, and records it in recents when that is on. The Open With
+    /// dialog and the Open with submenu both launch through here.
+    fn open_path_with(&self, app: &MimeApp, path: &Path) {
+        let Some(mut command) = app.command(&[path]).and_then(|v| v.into_iter().next()) else {
+            log::warn!(
+                "failed to open {} with {:?}: failed to get command",
+                path.display(),
+                app.id
+            );
+            return;
+        };
+        match spawn_detached(&mut command) {
+            Ok(()) => {
+                if self.config.show_recents {
+                    let _ = recently_used_xbel::update_recently_used(
+                        &path.to_path_buf(),
+                        Self::APP_ID.to_string(),
+                        "cosmic-files".to_string(),
+                        None,
+                    );
+                }
+            }
+            Err(err) => {
+                log::warn!("failed to open {} with {:?}: {}", path.display(), app.id, err);
+            }
+        }
     }
 
     fn remove_window(&mut self, id: &window::Id) {
@@ -4187,36 +4217,7 @@ impl Application for App {
                             });
 
                             if let Some((app, _)) = available_apps.get(selected) {
-                                if let Some(mut command) =
-                                    app.command(&[&path]).and_then(|v| v.into_iter().next())
-                                {
-                                    match spawn_detached(&mut command) {
-                                        Ok(()) => {
-                                            if self.config.show_recents {
-                                                let _ = recently_used_xbel::update_recently_used(
-                                                    &path,
-                                                    Self::APP_ID.to_string(),
-                                                    "cosmic-files".to_string(),
-                                                    None,
-                                                );
-                                            }
-                                        }
-                                        Err(err) => {
-                                            log::warn!(
-                                                "failed to open {} with {:?}: {}",
-                                                path.display(),
-                                                app.id,
-                                                err
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    log::warn!(
-                                        "failed to open {} with {:?}: failed to get command",
-                                        path.display(),
-                                        app.id
-                                    );
-                                }
+                                self.open_path_with(app, &path);
                             }
                         }
                         DialogPage::PermanentlyDelete { paths } => {
@@ -4916,6 +4917,28 @@ impl Application for App {
                     }
                 }
             }
+            Message::OpenWithApp(entity_opt, index) => {
+                let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                let selected = self
+                    .tab_model
+                    .data::<Tab>(entity)
+                    .and_then(|tab| tab.items_opt())
+                    .and_then(|items| {
+                        let mut selected = items.iter().filter(|item| item.selected);
+                        // The submenu only appears for a single item.
+                        match (selected.next(), selected.next()) {
+                            (Some(item), None) => {
+                                Some((item.path_opt()?.clone(), item.mime.clone()))
+                            }
+                            _ => None,
+                        }
+                    });
+                if let Some((path, mime)) = selected
+                    && let Some(app) = self.mime_app_cache.menu_apps(&mime).get(index)
+                {
+                    self.open_path_with(app, &path);
+                }
+            }
             Message::OpenWithSelection(index) => {
                 if let Some(DialogPage::OpenWith { selected, .. }) = self.dialog_pages.front_mut() {
                     *selected = index;
@@ -5221,13 +5244,12 @@ impl Application for App {
                     );
                 }
             }
-            #[cfg(target_os = "macos")]
             Message::ToggleTag(entity_opt, index) => {
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
                 if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
                     && let Some(items) = tab.items_opt_mut()
                 {
-                    crate::tags_macos::toggle_selected(items, index);
+                    crate::tags::toggle_selected(items, index);
                 }
             }
             Message::Preview(entity_opt) => {
@@ -7778,6 +7800,7 @@ impl Application for App {
                     self.clipboard_has_content(),
                     &self.config.context_actions,
                     self.config.context_quick_bar,
+                    Some(&self.mime_app_cache),
                 )
                 .map(move |message| Message::TabMessage(Some(entity), message));
             tab_column = tab_column.push(tab_view);
@@ -7809,6 +7832,7 @@ impl Application for App {
                                 self.clipboard_has_content(),
                                 &self.config.context_actions,
                                 self.config.context_quick_bar,
+                                Some(&self.mime_app_cache),
                             )
                             .map(move |message| Message::TabMessage(Some(*entity), message)),
                         None => widget::space::vertical().into(),

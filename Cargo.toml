@@ -271,6 +271,14 @@ libcosmic = { git = "https://github.com/shythulu/libcosmic.git", branch = "macos
 cosmic-config = { git = "https://github.com/shythulu/libcosmic.git", branch = "macosmetic" }
 cosmic-theme = { git = "https://github.com/shythulu/libcosmic.git", branch = "macosmetic" }
 
+# Fork of pop-os/winit at the cosmic-0.14 tag, with a popup panel class for macOS
+# (WindowAttributesMacOS::with_popup) that libcosmic's menu popups need. The iced fork
+# names it directly; this patch moves every other user, such as accesskit_winit, onto
+# the same copy, so the build has one winit.
+[patch.'https://github.com/pop-os/winit.git']
+winit = { git = "https://github.com/shythulu/winit.git", branch = "macosmetic" }
+winit-core = { git = "https://github.com/shythulu/winit.git", branch = "macosmetic" }
+
 # The icon lookup, vendored from pop-os/freedesktop-icons at the revision the lock pinned,
 # with a `reload_themes()` so a theme installed from the gallery is usable without a
 # restart. See vendor/freedesktop-icons/MACOSMETIC.md. The patch applies to libcosmic's

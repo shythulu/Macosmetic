@@ -325,6 +325,10 @@ unknown-folder = unknown folder
 
 ## Open with
 menu-open-with = Open with...
+# The "Open with" submenu of a context menu, its default app, and its last entry.
+open-with-menu = Open with
+open-with-default = { $app } (default)
+open-with-other = Other…
 default-app = {$name} (default)
 search-application = Search by app name
 

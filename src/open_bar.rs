@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+//! The Open row of a context menu: icon buttons for the ways to open a folder, under the
+//! quick-action bar. It shortens the list: an action the row carries leaves the list.
+//!
+//! [`items`] decides which buttons show for a selection. It is a pure function so the rules
+//! can be tested without a window. [`row`] turns them into a row for the quick bar's stack.
+
+use std::collections::HashMap;
+
+use cosmic::widget;
+use cosmic::widget::menu::key_bind::KeyBind;
+
+use crate::app::Action;
+use crate::fl;
+use crate::quick_bar::{self, RowButton};
+use crate::tab;
+
+/// What the row needs to know about the selection the menu opened on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Context {
+    /// Items selected.
+    pub selected: usize,
+    /// How many of those are folders.
+    pub selected_dirs: usize,
+    /// The tab is the file manager itself, not a file dialog or the desktop. Only there can
+    /// a folder open in a new tab or window.
+    pub app_mode: bool,
+}
+
+/// The actions the row can carry, in display order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenAction {
+    NewWindow,
+    NewTab,
+    Terminal,
+}
+
+impl OpenAction {
+    /// The [`Action`] the menu list runs for the same entry.
+    pub const fn action(self) -> Action {
+        match self {
+            Self::NewWindow => Action::OpenInNewWindow,
+            Self::NewTab => Action::OpenInNewTab,
+            Self::Terminal => Action::OpenTerminal,
+        }
+    }
+
+    /// Icon names, best first. COSMIC's set has no tab icon, so new tab falls back to a
+    /// window stack.
+    const fn icon_names(self) -> &'static [&'static str] {
+        match self {
+            Self::NewWindow => &["window-new-symbolic"],
+            Self::NewTab => &["tab-new-symbolic", "window-stack-symbolic"],
+            Self::Terminal => &["utilities-terminal-symbolic"],
+        }
+    }
+
+    /// The tooltip name: the menu list's label without its ellipsis.
+    pub fn label(self) -> String {
+        let label = match self {
+            Self::NewWindow => fl!("open-in-new-window"),
+            Self::NewTab => fl!("open-in-new-tab"),
+            Self::Terminal => fl!("open-in-terminal"),
+        };
+        label
+            .trim_end_matches("...")
+            .trim_end_matches('…')
+            .to_string()
+    }
+}
+
+/// Which buttons the row shows, left to right, for `context`. Mirrors the conditions of the
+/// matching list entries: new tab and new window need a selection of folders only, in the
+/// file manager; terminal needs exactly one folder. Open with is a submenu in the list.
+pub fn items(context: Context) -> Vec<OpenAction> {
+    let mut items = Vec::with_capacity(4);
+    let only_folders = context.selected > 0 && context.selected == context.selected_dirs;
+    if only_folders && context.app_mode {
+        items.push(OpenAction::NewWindow);
+        items.push(OpenAction::NewTab);
+    }
+    if context.selected == 1 && context.selected_dirs == 1 {
+        items.push(OpenAction::Terminal);
+    }
+    items
+}
+
+/// Whether `items` has a button for `action`, so the list below can drop its own entry.
+pub fn carries(items: &[OpenAction], action: OpenAction) -> bool {
+    items.contains(&action)
+}
+
+/// The row as a menu row. Each press runs the same message as the list entry would.
+pub fn row(items: &[OpenAction], key_binds: &HashMap<KeyBind, Action>) -> quick_bar::Row {
+    let buttons = items
+        .iter()
+        .map(|item| {
+            let mut names = item.icon_names().iter();
+            let first = names.next().copied().unwrap_or_default();
+            let fallback: Vec<_> = names.map(|name| (*name).into()).collect();
+            let handle = widget::icon::from_name(first)
+                .size(16)
+                .fallback(Some(widget::icon::IconFallback::Names(fallback)))
+                .handle();
+            RowButton {
+                icon: handle,
+                tooltip: quick_bar::tooltip(item.label(), item.action(), key_binds),
+                on_press: Some(tab::Message::ContextAction(item.action())),
+            }
+        })
+        .collect();
+    quick_bar::Row::new(buttons)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context(selected: usize, selected_dirs: usize) -> Context {
+        Context {
+            selected,
+            selected_dirs,
+            app_mode: true,
+        }
+    }
+
+    #[test]
+    fn one_folder_shows_every_way_to_open_in_order() {
+        assert_eq!(
+            items(context(1, 1)),
+            vec![
+                OpenAction::NewWindow,
+                OpenAction::NewTab,
+                OpenAction::Terminal,
+            ]
+        );
+    }
+
+    #[test]
+    fn one_file_has_no_row() {
+        // Files open with an application, from the Open with submenu in the list.
+        assert!(items(context(1, 0)).is_empty());
+    }
+
+    #[test]
+    fn several_folders_open_in_new_windows_or_tabs() {
+        assert_eq!(
+            items(context(3, 3)),
+            vec![OpenAction::NewWindow, OpenAction::NewTab]
+        );
+    }
+
+    #[test]
+    fn mixed_selection_has_no_row() {
+        assert!(items(context(3, 1)).is_empty());
+    }
+
+    #[test]
+    fn nothing_selected_has_no_row() {
+        assert!(items(context(0, 0)).is_empty());
+    }
+
+    #[test]
+    fn dialogs_and_desktop_cannot_open_tabs_or_windows() {
+        let dialog = Context {
+            app_mode: false,
+            ..context(1, 1)
+        };
+        assert_eq!(items(dialog), vec![OpenAction::Terminal]);
+    }
+
+    #[test]
+    fn carries_reports_present_actions() {
+        let row = items(context(3, 3));
+        assert!(carries(&row, OpenAction::NewTab));
+        assert!(!carries(&row, OpenAction::Terminal));
+    }
+
+    #[test]
+    fn labels_lose_the_ellipsis() {
+        crate::localize::localize();
+        assert_eq!(OpenAction::NewTab.label(), "Open in new tab");
+    }
+}
