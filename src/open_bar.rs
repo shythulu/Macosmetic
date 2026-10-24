@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The Open row of a context menu: icon buttons for the ways to open a selection, under the
+//! The Open row of a context menu: icon buttons for the ways to open a folder, under the
 //! quick-action bar. It shortens the list: an action the row carries leaves the list.
 //!
 //! [`items`] decides which buttons show for a selection. It is a pure function so the rules
@@ -34,8 +34,6 @@ pub enum OpenAction {
     NewWindow,
     NewTab,
     Terminal,
-    /// Pick an application to open the item with.
-    With,
 }
 
 impl OpenAction {
@@ -45,7 +43,6 @@ impl OpenAction {
             Self::NewWindow => Action::OpenInNewWindow,
             Self::NewTab => Action::OpenInNewTab,
             Self::Terminal => Action::OpenTerminal,
-            Self::With => Action::OpenWith,
         }
     }
 
@@ -56,10 +53,6 @@ impl OpenAction {
             Self::NewWindow => &["window-new-symbolic"],
             Self::NewTab => &["tab-new-symbolic", "window-stack-symbolic"],
             Self::Terminal => &["utilities-terminal-symbolic"],
-            Self::With => &[
-                "view-app-grid-symbolic",
-                "application-x-executable-symbolic",
-            ],
         }
     }
 
@@ -69,7 +62,6 @@ impl OpenAction {
             Self::NewWindow => fl!("open-in-new-window"),
             Self::NewTab => fl!("open-in-new-tab"),
             Self::Terminal => fl!("open-in-terminal"),
-            Self::With => fl!("menu-open-with"),
         };
         label
             .trim_end_matches("...")
@@ -80,7 +72,7 @@ impl OpenAction {
 
 /// Which buttons the row shows, left to right, for `context`. Mirrors the conditions of the
 /// matching list entries: new tab and new window need a selection of folders only, in the
-/// file manager; terminal needs exactly one folder; open with needs exactly one item.
+/// file manager; terminal needs exactly one folder. Open with is a submenu in the list.
 pub fn items(context: Context) -> Vec<OpenAction> {
     let mut items = Vec::with_capacity(4);
     let only_folders = context.selected > 0 && context.selected == context.selected_dirs;
@@ -90,9 +82,6 @@ pub fn items(context: Context) -> Vec<OpenAction> {
     }
     if context.selected == 1 && context.selected_dirs == 1 {
         items.push(OpenAction::Terminal);
-    }
-    if context.selected == 1 {
-        items.push(OpenAction::With);
     }
     items
 }
@@ -144,14 +133,14 @@ mod tests {
                 OpenAction::NewWindow,
                 OpenAction::NewTab,
                 OpenAction::Terminal,
-                OpenAction::With,
             ]
         );
     }
 
     #[test]
-    fn one_file_only_opens_with_an_application() {
-        assert_eq!(items(context(1, 0)), vec![OpenAction::With]);
+    fn one_file_has_no_row() {
+        // Files open with an application, from the Open with submenu in the list.
+        assert!(items(context(1, 0)).is_empty());
     }
 
     #[test]
@@ -178,20 +167,19 @@ mod tests {
             app_mode: false,
             ..context(1, 1)
         };
-        assert_eq!(items(dialog), vec![OpenAction::Terminal, OpenAction::With]);
+        assert_eq!(items(dialog), vec![OpenAction::Terminal]);
     }
 
     #[test]
     fn carries_reports_present_actions() {
-        let row = items(context(1, 0));
-        assert!(carries(&row, OpenAction::With));
+        let row = items(context(3, 3));
+        assert!(carries(&row, OpenAction::NewTab));
         assert!(!carries(&row, OpenAction::Terminal));
     }
 
     #[test]
     fn labels_lose_the_ellipsis() {
         crate::localize::localize();
-        assert_eq!(OpenAction::With.label(), "Open with");
         assert_eq!(OpenAction::NewTab.label(), "Open in new tab");
     }
 }

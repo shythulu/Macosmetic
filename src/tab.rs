@@ -7698,6 +7698,7 @@ impl Tab {
         clipboard_paste_available: bool,
         context_actions: &'a [ContextActionPreset],
         context_quick_bar: bool,
+        mime_app_cache: Option<&'a mime_app::MimeAppCache>,
     ) -> Element<'a, Message> {
         // Update cached size
         self.size_opt.set(Some(size));
@@ -7802,6 +7803,7 @@ impl Tab {
                 clipboard_paste_available,
                 context_actions,
                 context_quick_bar,
+                mime_app_cache,
             )),
         )
         // Wide enough for the longest entry, "New folder with selection (N items)", and its shortcut.
@@ -8182,6 +8184,7 @@ impl Tab {
         clipboard_paste_available: bool,
         context_actions: &'a [ContextActionPreset],
         context_quick_bar: bool,
+        mime_app_cache: Option<&'a mime_app::MimeAppCache>,
     ) -> Element<'a, Message> {
         widget::responsive(move |size| {
             widget::id_container(
@@ -8192,6 +8195,7 @@ impl Tab {
                     clipboard_paste_available,
                     context_actions,
                     context_quick_bar,
+                    mime_app_cache,
                 ),
                 Id::new(format!(
                     "tab-{}-{}",

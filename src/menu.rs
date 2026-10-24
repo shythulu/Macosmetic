@@ -196,6 +196,46 @@ fn tag_row(tags: &[crate::tags::MenuTag]) -> quick_bar::Row {
     quick_bar::Row::compact(buttons)
 }
 
+/// The "Open with" submenu for the one selected item: the apps for its type, the default
+/// first and marked, then "Other…" for the full Open With dialog. With no apps to list, it
+/// is the plain entry that opens the dialog.
+fn open_with_menu(
+    tab: &Tab,
+    mime_app_cache: Option<&crate::mime_app::MimeAppCache>,
+) -> menu::Item<TabAction, String> {
+    let mime = tab
+        .items_opt()
+        .and_then(|items| items.iter().find(|item| item.selected))
+        .map(|item| item.mime.clone());
+    let apps = match (mime_app_cache, &mime) {
+        (Some(cache), Some(mime)) => cache.menu_apps(mime),
+        _ => Vec::new(),
+    };
+    let Some(mime) = mime.filter(|_| !apps.is_empty()) else {
+        return menu::Item::Button(fl!("menu-open-with"), None, TabAction(Action::OpenWith));
+    };
+    let mut children: Vec<menu::Item<TabAction, String>> = apps
+        .iter()
+        .enumerate()
+        .map(|(index, app)| {
+            let label = if app.is_default(&mime) {
+                fl!("open-with-default", app = app.name.clone())
+            } else {
+                app.name.clone()
+            };
+            let entry = menu::Entry::new(label, TabAction(Action::OpenWithApp(index)));
+            menu::Item::Entry(entry.icon(app.icon()))
+        })
+        .collect();
+    children.push(menu::Item::Divider);
+    children.push(menu::Item::Button(
+        fl!("open-with-other"),
+        None,
+        TabAction(Action::OpenWith),
+    ));
+    menu::Item::Folder(fl!("open-with-menu"), children)
+}
+
 /// The "Tags" submenu, holding the entries of `tags` from `skip` on. A tag every selected
 /// item has is checked; clicking it removes it from all, clicking any other adds it to all.
 /// With the tag row showing, the submenu keeps only the tags the row has no dot for.
@@ -223,6 +263,7 @@ pub fn context_menu<'a>(
     clipboard_paste_available: bool,
     context_actions: &[ContextActionPreset],
     context_quick_bar: bool,
+    mime_app_cache: Option<&crate::mime_app::MimeAppCache>,
 ) -> Vec<menu::Tree<tab::Message>> {
     let menu_item =
         |label: String, action: Action| menu::Item::Button(label, None, TabAction(action));
@@ -406,9 +447,7 @@ pub fn context_menu<'a>(
                     children.push(menu_item(fl!("open"), Action::Open));
                 }
                 if selected == 1 {
-                    if open_keeps(open_bar::OpenAction::With) {
-                        children.push(menu_item(fl!("menu-open-with"), Action::OpenWith));
-                    }
+                    children.push(open_with_menu(tab, mime_app_cache));
                     if selected_dir == 1 && open_keeps(open_bar::OpenAction::Terminal) {
                         children.push(menu_item(fl!("open-in-terminal"), Action::OpenTerminal));
                     }
