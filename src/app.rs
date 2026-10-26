@@ -8477,7 +8477,7 @@ mod tests {
 
     #[test]
     fn opening_the_trash_runs_this_executable_rather_than_one_found_on_the_path() {
-        let exe = Path::new("/Applications/COSMIC Files.app/Contents/MacOS/cosmic-files");
+        let exe = Path::new("/Applications/Cosmetic.app/Contents/MacOS/cosmic-files");
         let command = open_trash_command(exe);
 
         assert_eq!(command.get_program(), exe.as_os_str());

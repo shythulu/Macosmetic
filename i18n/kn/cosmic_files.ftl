@@ -1,4 +1,4 @@
-cosmic-files = ಕಾಸ್ಮಿಕ್ ಫೈಲ್ಸ್
+cosmic-files = Cosmetic
 empty-folder = ಖಾಲಿ ಫೋಲ್ಡರ್
 empty-folder-hidden = ಖಾಲಿ ಫೋಲ್ಡರ್ (ಗೋಚರವಾಗದ ಐಟಂಗಳನ್ನು ಹೊಂದಿದೆ)
 no-results = ಯಾವುದೇ ಫಲಿತಾಂಶಗಳು ಇಲ್ಲ
@@ -272,7 +272,7 @@ list-view = ಪಟ್ಟಿಯ ವೀಕ್ಷಣೆ
 show-hidden-files = ಮರೆಮಾಡಿದ ಫೈಲ್‌ಗಳನ್ನು ತೋರಿಸಿ
 list-directories-first = ಡೈರೆಕ್ಟರಿಗಳನ್ನು ಮೊದಲು ತೋರಿಸಿ
 menu-settings = ಸೆಟ್ಟಿಂಗ್‌ಗಳು...
-menu-about = COSMIC ಫೈಲ್ ಬಗ್ಗೆ...
+menu-about = Cosmetic ಬಗ್ಗೆ...
 
 ## Sort
 

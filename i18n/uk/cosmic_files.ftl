@@ -1,4 +1,4 @@
-cosmic-files = Файли COSMIC
+cosmic-files = Cosmetic
 empty-folder = Порожня тека
 empty-folder-hidden = Порожня тека (містить приховані елементи)
 filesystem = Файлова система
@@ -179,7 +179,7 @@ list-view = Перегляд списком
 show-hidden-files = Показати приховані файли
 list-directories-first = Теки спочатку
 menu-settings = Налаштування...
-menu-about = Про Файли COSMIC...
+menu-about = Про Cosmetic...
 repository = Сховище
 support = Підтримка
 details = Подробиці

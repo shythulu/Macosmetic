@@ -337,7 +337,7 @@ mod tests {
             classify_handler(
                 Some(Path::new(FINDER_PATH)),
                 Some(FINDER_BUNDLE_ID),
-                Some(Path::new("/Applications/COSMIC Files.app"))
+                Some(Path::new("/Applications/Cosmetic.app"))
             ),
             Handler::Finder
         );
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn this_bundle_is_known_by_its_path() {
-        let this = Path::new("/Applications/COSMIC Files.app");
+        let this = Path::new("/Applications/Cosmetic.app");
         assert_eq!(
             classify_handler(Some(this), Some("com.system76.CosmicFiles"), Some(this)),
             Handler::ThisApp
@@ -358,11 +358,11 @@ mod tests {
         // install in /Applications are two handlers even with the same identifier.
         assert_eq!(
             classify_handler(
-                Some(Path::new("/Users/me/dev/target/macos/COSMIC Files.app")),
+                Some(Path::new("/Users/me/dev/target/macos/Cosmetic.app")),
                 Some("com.system76.CosmicFiles"),
-                Some(Path::new("/Applications/COSMIC Files.app"))
+                Some(Path::new("/Applications/Cosmetic.app"))
             ),
-            Handler::Other("COSMIC Files".to_string())
+            Handler::Other("Cosmetic".to_string())
         );
     }
 

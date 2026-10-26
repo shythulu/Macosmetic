@@ -1,4 +1,4 @@
-cosmic-files = Fișiere COSMIC
+cosmic-files = Cosmetic
 empty-folder = Dosar gol
 empty-folder-hidden = Dosar gol (conține elemente ascunse)
 no-results = Niciun rezultat găsit
@@ -364,7 +364,7 @@ show-hidden-files = Afișează fișiere ascunse
 list-directories-first = Listează directoarele primele
 gallery-preview = Previzualizare galerie
 menu-settings = Setări...
-menu-about = Despre Fișierele COSMIC...
+menu-about = Despre Cosmetic...
 
 ## Sort
 

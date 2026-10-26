@@ -1,4 +1,4 @@
-cosmic-files = COSMIC Dosyalar
+cosmic-files = Cosmetic
 empty-folder = Boş klasör
 empty-folder-hidden = Boş klasör (gizli ögeler içerir)
 no-results = Sonuç bulunamadı
@@ -303,7 +303,7 @@ show-hidden-files = Gizli dosyaları göster
 list-directories-first = Önce dizinleri listele
 gallery-preview = Galeri ön izlemesi
 menu-settings = Ayarlar...
-menu-about = COSMIC Dosyalar hakkında...
+menu-about = Cosmetic hakkında...
 
 ## Sort
 

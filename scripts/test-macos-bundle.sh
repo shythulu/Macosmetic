@@ -13,7 +13,7 @@ set -uo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(dirname -- "$script_dir")
 target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
-app="$target_dir/macos/COSMIC Files.app"
+app="$target_dir/macos/Cosmetic.app"
 
 passed=0
 failed=0
@@ -51,7 +51,7 @@ if ! "$script_dir/macos-bundle.sh"; then
 fi
 
 echo "# bundle structure"
-assert_dir "$app" "the bundle is at target/macos/COSMIC Files.app"
+assert_dir "$app" "the bundle is at target/macos/Cosmetic.app"
 assert_dir "$app/Contents/MacOS" "Contents/MacOS exists"
 assert_dir "$app/Contents/Resources" "Contents/Resources exists"
 assert_executable "$app/Contents/MacOS/cosmic-files" "Contents/MacOS/cosmic-files is executable"
@@ -90,8 +90,8 @@ assert_plist_value CFBundleIdentifier com.system76.CosmicFiles \
 assert_plist_value CFBundleExecutable cosmic-files \
     "CFBundleExecutable names the file in Contents/MacOS"
 assert_plist_value CFBundlePackageType APPL "CFBundlePackageType is APPL"
-assert_plist_value CFBundleName "COSMIC Files" "CFBundleName is set"
-assert_plist_value CFBundleDisplayName "COSMIC Files" "CFBundleDisplayName is set"
+assert_plist_value CFBundleName "Cosmetic" "CFBundleName is set"
+assert_plist_value CFBundleDisplayName "Cosmetic" "CFBundleDisplayName is set"
 assert_plist_value CFBundleIconFile cosmic-files "CFBundleIconFile names the icns"
 # Without this the bundle renders 1x magnified; see porting notes 5.2.
 assert_plist_value NSHighResolutionCapable true "NSHighResolutionCapable is true"

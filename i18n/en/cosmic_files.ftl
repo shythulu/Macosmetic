@@ -1,4 +1,4 @@
-cosmic-files = COSMIC Files
+cosmic-files = Cosmetic
 comment = File manager for the COSMIC desktop
 keywords = Folder;Manager;
 empty-folder = Empty folder
@@ -538,7 +538,7 @@ show-hidden-files = Show hidden files
 list-directories-first = List directories first
 gallery-preview = Gallery preview
 menu-settings = Settings...
-menu-about = About COSMIC Files...
+menu-about = About Cosmetic...
 
 ## Sort
 sort = Sort

@@ -53,7 +53,7 @@ open-file = ਫ਼ਾਇਲ ਨੂੰ ਖੋਲ੍ਹੋ
 open-folder = ਫੋਲਡਰ ਨੂੰ ਖੋਲ੍ਹੋ
 open-in-new-tab = ਨਵੀਂ ਟੈਬ ਵਿੱਚ ਖੋਲ੍ਹੋ
 open-in-new-window = ਨਵੀਂ ਵਿੰਡੋ ਵਿੱਚ ਖੋਲ੍ਹੋ
-cosmic-files = COSMIC ਫ਼ਾਇਲਾਂ
+cosmic-files = Cosmetic
 operations-running-finished =
     { $running } { $running ->
         [one] ਕਾਰਵਾਈ
@@ -203,7 +203,7 @@ move-to = ਇੱਥੇ ਭੇਜੋ...
 remove-from-sidebar = ਬਾਹੀ ਵਿੱਚੋਂ ਹਟਾਓ
 reload-folder = ਫੋਲਡਰ ਨੂੰ ਮੁੜ-ਲੋਡ ਕਰੋ
 list-view = ਸੂਚੀ ਝਲਕ
-menu-about = COSMIC ਫਾਇਲਾਂ ਬਾਰੇ...
+menu-about = Cosmetic ਬਾਰੇ...
 sort-a-z = ਓ-ੜ
 sort-z-a = ੜ-ਓ
 sort-smallest-to-largest = ਛੋਟੇ ਤੋਂ ਵੱਡਾ

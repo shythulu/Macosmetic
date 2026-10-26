@@ -3,7 +3,7 @@
 
 //! Thumbnails and previews from the macOS Quick Look thumbnailing service.
 //!
-//! COSMIC Files normally renders previews either with the `image` crate or with an external
+//! Cosmetic normally renders previews either with the `image` crate or with an external
 //! freedesktop.org thumbnailer. Neither is available on macOS: `image` cannot decode HEIC or
 //! camera RAW, and there are no `.thumbnailer` files to run. `QLThumbnailGenerator` covers all
 //! of those formats plus PDFs, office documents and video, using the same generators that Finder

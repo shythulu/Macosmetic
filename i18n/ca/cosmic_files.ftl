@@ -1,4 +1,4 @@
-cosmic-files = Fitxers del COSMIC
+cosmic-files = Cosmetic
 empty-folder = Carpeta buida
 empty-folder-hidden = Carpeta buida (conté elements ocults)
 no-results = No s'ha trobat cap resultat
@@ -341,7 +341,7 @@ show-hidden-files = Mostra els fitxers ocults
 list-directories-first = Mostra els directoris primer
 gallery-preview = Vista prèvia en galeria
 menu-settings = Configuració...
-menu-about = Quant a Fitxers del COSMIC...
+menu-about = Quant a Cosmetic...
 
 ## Sort
 

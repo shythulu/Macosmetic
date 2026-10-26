@@ -1,4 +1,4 @@
-cosmic-files = COSMIC Filer
+cosmic-files = Cosmetic
 open-file = Opna fil
 empty-folder = Tom mappe
 cancel = Avbryt

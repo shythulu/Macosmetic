@@ -1,4 +1,4 @@
-cosmic-files = Archivos COSMIC
+cosmic-files = Cosmetic
 comment = Gestor de archivos de COSMIC
 keywords = Archivos;Ficheros;Gestor;Explorador;
 empty-folder = Carpeta vacía
@@ -398,7 +398,7 @@ show-hidden-files = Mostrar archivos ocultos
 list-directories-first = Enumerar los directorios primero
 gallery-preview = Vista previa de la galería
 menu-settings = Configuración...
-menu-about = Acerca de COSMIC Files...
+menu-about = Acerca de Cosmetic...
 
 ## Sort
 

@@ -1,4 +1,4 @@
-cosmic-files = Soubory COSMIC
+cosmic-files = Cosmetic
 comment = Správce souborů pro prostředí COSMIC
 keywords = Složka;Složky;Správce;Manažer;Prohlížeč;
 empty-folder = Složka je prázdná
@@ -131,7 +131,7 @@ list-view = Zobrazit jako seznam
 show-hidden-files = Zobrazit skryté soubory
 list-directories-first = Řadit nejprve složky
 menu-settings = Nastavení...
-menu-about = O aplikaci Soubory COSMIC...
+menu-about = O aplikaci Cosmetic...
 no-results = Nenalezeny žádné výsledky
 repository = Repozitář
 support = Podpora

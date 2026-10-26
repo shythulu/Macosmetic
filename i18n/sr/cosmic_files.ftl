@@ -48,7 +48,7 @@ removing-from-recents =
         [one] ставке
        *[other] ставки
     } из { recents }
-cosmic-files = Космик датотеке
+cosmic-files = Cosmetic
 type-to-search-enter-path = Уноси путању до директоријума или датотеке
 trash = Смеће
 emptying-trash = Пражњење { trash } ({ $progress })...
@@ -61,7 +61,7 @@ compressing =
        *[other] ставки
     } из „{ $from }“ у „{ $to }“ ({ $progress })...
 move-to-trash = Премести у смеће
-menu-about = О програму Космик Датотеке...
+menu-about = О програму Cosmetic...
 setting-executable-and-launching = Подешавање „{ $name }“ као извршне датотеке и покретање
 open-multiple-files = Отвори више датотека
 default-size = Подразумевана величина

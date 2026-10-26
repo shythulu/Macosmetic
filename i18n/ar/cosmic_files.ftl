@@ -1,4 +1,4 @@
-cosmic-files = ملفات COSMIC
+cosmic-files = Cosmetic
 comment = مدير ملفات لسطح مكتب COSMIC
 keywords = مجلد;ملف;مدير;
 empty-folder = مجلد فارغ
@@ -131,7 +131,7 @@ list-view = عرض اللائحة
 show-hidden-files = أظهر الملفات المخفية
 list-directories-first = اسرد المجلدات اولاً
 menu-settings = الإعدادات...
-menu-about = عن مدير ملفات COSMIC...
+menu-about = عن Cosmetic...
 dismiss = أهمِل الرسالة
 no-results = لم يُعثر على نتائج
 networks = الشبكات

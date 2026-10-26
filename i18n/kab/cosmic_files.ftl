@@ -1,5 +1,5 @@
 change-wallpaper = Beddel aɣrab n ugdil…
-cosmic-files = Ifuyla COSMIC
+cosmic-files = Cosmetic
 empty-folder = Akaram d ilem
 empty-folder-hidden = Akaram d ilem (yesɛa iferdisen yeffren)
 no-results = Ulac igmaḍ yettwafen
@@ -159,7 +159,7 @@ grid-view = Askan s iẓiki
 list-view = Askan s tebdart
 show-hidden-files = Sken ifuyla uffiren
 gallery-preview = Taskant n temidelt
-menu-about = Ɣef Ifuyla COSMIC…
+menu-about = Ɣef Cosmetic…
 sort = Asmizzwer
 sort-newest-first = Amaynut d amezwaru
 sort-oldest-first = Aqbur d amezwaru

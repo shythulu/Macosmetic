@@ -2,7 +2,7 @@ empty-folder = Άδειος φάκελος
 no-results = Δεν βρέθηκαν αποτελέσματα
 trash = Απορρίμματα
 recents = Πρόσφατα
-cosmic-files = Αρχεία COSMIC
+cosmic-files = Cosmetic
 empty-folder-hidden = Άδειος φάκελος (περιέχει κρυφά στοιχεία)
 filesystem = Σύστημα αρχείων
 home = Προσωπικός φάκελος
@@ -131,7 +131,7 @@ compressing =
        *[other] στοιχείων
     } από τον φάκελο «{ $from }» στο αρχείο «{ $to }» ({ $progress })...
 move-to-trash = Μετακίνηση στα απορρίμματα
-menu-about = Σχετικά με τα Αρχεία COSMIC...
+menu-about = Σχετικά με το Cosmetic...
 setting-executable-and-launching = Ορισμός του «{ $name }» ως εκτελέσιμου και εκκίνηση
 open-multiple-files = Άνοιγμα πολλαπλών αρχείων
 menu-open-with = Άνοιγμα με...

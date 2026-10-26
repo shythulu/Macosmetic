@@ -1,6 +1,6 @@
 # Custom key bindings
 
-COSMIC Files ships a set of default keyboard shortcuts. You can add to them, rebind them, or
+Cosmetic ships a set of default keyboard shortcuts. You can add to them, rebind them, or
 switch them off by editing the configuration file. There is no settings UI for this yet — the file
 is the only interface.
 

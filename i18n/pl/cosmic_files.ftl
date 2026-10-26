@@ -1,4 +1,4 @@
-cosmic-files = Pliki COSMIC
+cosmic-files = Cosmetic
 comment = Menedżer plików dla środowiska COSMIC
 keywords = Katalogi;Pliki;Menedżer;
 empty-folder = Pusty katalog
@@ -412,7 +412,7 @@ show-hidden-files = Pokaż ukryte pliki
 list-directories-first = Najpierw wyświetlaj katalogi
 gallery-preview = Podgąd galerii
 menu-settings = Ustawienia…
-menu-about = O Plikach COSMIC…
+menu-about = O aplikacji Cosmetic…
 
 ## Sort
 

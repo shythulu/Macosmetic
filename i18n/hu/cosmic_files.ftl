@@ -1,4 +1,4 @@
-cosmic-files = COSMIC Fájlok
+cosmic-files = Cosmetic
 comment = Fájlkezelő a COSMIC asztali környezethez
 keywords = mappa;fájl;kezelő;
 empty-folder = Üres mappa
@@ -408,7 +408,7 @@ show-hidden-files = Rejtett fájlok megjelenítése
 list-directories-first = Könyvtárak listázása először
 gallery-preview = Galéria-előnézet
 menu-settings = Beállítások…
-menu-about = A COSMIC Fájlok névjegye…
+menu-about = A Cosmetic névjegye…
 
 ## Sort
 
