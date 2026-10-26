@@ -1,4 +1,4 @@
-cosmic-files = COSMIC Bestanden
+cosmic-files = Cosmetic
 empty-folder = Lege map
 empty-folder-hidden = Lege map (met verborgen items)
 no-results = Geen resultaten gevonden
@@ -394,7 +394,7 @@ show-hidden-files = Verborgen bestanden tonen
 list-directories-first = Mappen bovenaan weergeven
 gallery-preview = Galerijweergave
 menu-settings = Instellingen…
-menu-about = Over COSMIC Bestanden…
+menu-about = Over Cosmetic…
 
 ## Sort
 

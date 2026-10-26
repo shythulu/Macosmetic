@@ -1,4 +1,4 @@
-cosmic-files = Súbory COSMIC
+cosmic-files = Cosmetic
 comment = Správca súborov pre prostredie COSMIC
 keywords = Priečinok;Správca;Súbory;Manažér;Prehliadač;
 empty-folder = Priečinok je prázdny
@@ -444,7 +444,7 @@ show-hidden-files = Zobraziť skryté súbory
 list-directories-first = Najskôr priečinky
 gallery-preview = Náhľad galérie
 menu-settings = Nastavenia...
-menu-about = O aplikácii Súbory COSMIC...
+menu-about = O aplikácii Cosmetic...
 
 ## Sort
 

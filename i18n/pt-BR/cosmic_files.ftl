@@ -1,4 +1,4 @@
-cosmic-files = Gestor de Arquivos
+cosmic-files = Cosmetic
 comment = Gerenciador de arquivos do ambiente COSMIC
 empty-folder = Pasta vazia
 empty-folder-hidden = Pasta vazia (contém itens ocultos)
@@ -415,7 +415,7 @@ show-hidden-files = Mostrar arquivos ocultos
 list-directories-first = Listar pastas primeiro
 gallery-preview = Pré-visualizar
 menu-settings = Configurações...
-menu-about = Sobre o Gestor de Arquivos...
+menu-about = Sobre o Cosmetic...
 
 ## Sort
 

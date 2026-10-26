@@ -72,7 +72,7 @@ active theme, or generate the overlay's `index.theme` at install time.
 ## 2. Name → icon mappings (editor icon themes)
 
 These map a folder's *name* to an icon, the way VS Code shows a special icon for `src` or
-`.git`. COSMIC Files has nothing like this. The only fixed mapping is `SPECIAL_DIRS` for
+`.git`. Cosmetic has nothing like this. The only fixed mapping is `SPECIAL_DIRS` for
 the XDG user directories (`src/tab.rs:123-153`).
 
 | Project | URL | Licence (artwork) | Lic✓ | Folder data | Notes |

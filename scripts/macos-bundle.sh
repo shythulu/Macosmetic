@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Builds "COSMIC Files.app" from the release binary so the app can be launched
+# Builds "Cosmetic.app" from the release binary so the app can be launched
 # from Finder. See docs/macos-porting-notes.md section 5 for why the bundle is
 # shaped this way.
 #
 # Usage: scripts/macos-bundle.sh
 #
 # CARGO_TARGET_DIR is honoured; it defaults to <repo>/target. The bundle is
-# written to $CARGO_TARGET_DIR/macos/COSMIC Files.app.
+# written to $CARGO_TARGET_DIR/macos/Cosmetic.app.
 #
 # Build-machine prerequisites, copied into the bundle so the app needs neither
 # on the machine it runs on:
@@ -23,7 +23,7 @@ repo_root=$(dirname -- "$script_dir")
 target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 
 bin_name=cosmic-files
-app_name="COSMIC Files"
+app_name="Cosmetic"
 binary="$target_dir/release/$bin_name"
 app="$target_dir/macos/$app_name.app"
 

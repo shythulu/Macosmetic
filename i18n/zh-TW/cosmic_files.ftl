@@ -1,4 +1,4 @@
-cosmic-files = COSMIC 檔案
+cosmic-files = Cosmetic
 empty-folder = 空資料夾
 empty-folder-hidden = 空資料夾（包含隱藏項目）
 no-results = 找不到結果
@@ -240,7 +240,7 @@ list-view = 列表檢視
 show-hidden-files = 顯示隱藏檔案
 list-directories-first = 目錄優先列出
 menu-settings = 設定...
-menu-about = 關於 COSMIC 檔案...
+menu-about = 關於 Cosmetic...
 
 ## Sort
 

@@ -1,4 +1,4 @@
-cosmic-files = COSMIC Filer
+cosmic-files = Cosmetic
 comment = Filhanterare för skrivbordsmiljön COSMIC
 keywords = Folder;Katalog;Mapp;Manager;
 empty-folder = Mappen är tom
@@ -320,7 +320,7 @@ show-hidden-files = Visa dolda filer
 list-directories-first = Lista mappar först
 gallery-preview = Galleri förhandsvisning
 menu-settings = Inställningar...
-menu-about = Om COSMIC Filer...
+menu-about = Om Cosmetic...
 
 ## Sortera
 

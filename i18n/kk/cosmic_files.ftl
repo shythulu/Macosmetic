@@ -1,4 +1,4 @@
-cosmic-files = COSMIC файлдары
+cosmic-files = Cosmetic
 empty-folder = Бос бума
 empty-folder-hidden = Бос бума (жасырын элементтері бар)
 no-results = Нәтижелер табылмады
@@ -296,7 +296,7 @@ show-hidden-files = Жасырын файлдарды көрсету
 list-directories-first = Алдымен бумаларды тізімдеу
 gallery-preview = Галереяны алдын ала қарау
 menu-settings = Баптаулар...
-menu-about = COSMIC файлдар туралы...
+menu-about = Cosmetic туралы...
 sort = Сұрыптау
 sort-a-z = А-Я
 sort-z-a = Я-А

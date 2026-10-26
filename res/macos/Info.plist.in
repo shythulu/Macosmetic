@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Info.plist template for "COSMIC Files.app". scripts/macos-bundle.sh substitutes
+  Info.plist template for "Cosmetic.app". scripts/macos-bundle.sh substitutes
   @SHORT_VERSION@ with the version from Cargo.toml and writes the result to
   Contents/Info.plist.
 
@@ -15,9 +15,9 @@
 	<key>CFBundleIdentifier</key>
 	<string>com.system76.CosmicFiles</string>
 	<key>CFBundleName</key>
-	<string>COSMIC Files</string>
+	<string>Cosmetic</string>
 	<key>CFBundleDisplayName</key>
-	<string>COSMIC Files</string>
+	<string>Cosmetic</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -58,15 +58,15 @@
 	     needs: the Trash view detects the denial and links to the Privacy pane
 	     instead. -->
 	<key>NSDesktopFolderUsageDescription</key>
-	<string>COSMIC Files needs access to your Desktop folder to list, open and manage the files stored there.</string>
+	<string>Cosmetic needs access to your Desktop folder to list, open and manage the files stored there.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
-	<string>COSMIC Files needs access to your Documents folder to list, open and manage the files stored there.</string>
+	<string>Cosmetic needs access to your Documents folder to list, open and manage the files stored there.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
-	<string>COSMIC Files needs access to your Downloads folder to list, open and manage the files stored there.</string>
+	<string>Cosmetic needs access to your Downloads folder to list, open and manage the files stored there.</string>
 	<key>NSRemovableVolumesUsageDescription</key>
-	<string>COSMIC Files needs access to removable volumes to browse USB drives, memory cards and other external disks.</string>
+	<string>Cosmetic needs access to removable volumes to browse USB drives, memory cards and other external disks.</string>
 	<key>NSNetworkVolumesUsageDescription</key>
-	<string>COSMIC Files needs access to network volumes to browse file shares you have mounted.</string>
+	<string>Cosmetic needs access to network volumes to browse file shares you have mounted.</string>
 
 	<!-- Folder handling: what puts the app in Finder's "Open With" menu for a
 	     folder. public.folder is what Finder reports for an ordinary folder and

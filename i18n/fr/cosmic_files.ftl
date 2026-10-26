@@ -1,4 +1,4 @@
-cosmic-files = Fichiers COSMIC
+cosmic-files = Cosmetic
 empty-folder = Dossier vide
 empty-folder-hidden = Dossier vide (contient des éléments cachés)
 no-results = Aucun résultat trouvé
@@ -389,7 +389,7 @@ show-hidden-files = Afficher les fichiers cachés
 list-directories-first = Lister les répertoires en premier
 gallery-preview = Aperçu de la galerie
 menu-settings = Paramètres...
-menu-about = À propos de Fichiers COSMIC...
+menu-about = À propos de Cosmetic...
 
 ## Sort
 

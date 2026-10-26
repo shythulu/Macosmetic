@@ -1,4 +1,4 @@
-cosmic-files = COSMIC 文件管理器
+cosmic-files = Cosmetic
 empty-folder = 空文件夹
 empty-folder-hidden = 空文件夹（包含隐藏项目）
 no-results = 未找到结果
@@ -406,7 +406,7 @@ show-hidden-files = 显示隐藏文件
 list-directories-first = 优先列出目录
 gallery-preview = 图库预览
 menu-settings = 设置…
-menu-about = 关于 COSMIC 文件…
+menu-about = 关于 Cosmetic…
 
 ## Sort
 

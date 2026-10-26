@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=COSMIC Files
+Name=Cosmetic
 Comment=File manager for the COSMIC desktop
 Exec=cosmic-files %U
 Terminal=false

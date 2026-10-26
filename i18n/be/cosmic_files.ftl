@@ -1,4 +1,4 @@
-cosmic-files = Файлы COSMIC
+cosmic-files = Cosmetic
 empty-folder = Пустая папка
 empty-folder-hidden = Пустая папка (са схаванымі элементамі)
 no-results = Нічога не знойдзена
@@ -403,7 +403,7 @@ show-hidden-files = Паказваць схаваныя файлы
 list-directories-first = Размяшчаць папкі перад файламі
 gallery-preview = Папярэдні прагляд
 menu-settings = Налады...
-menu-about = Пра Файлы COSMIC...
+menu-about = Пра Cosmetic...
 
 ## Sort
 

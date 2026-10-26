@@ -1,4 +1,4 @@
-cosmic-files = Ficheiros COSMIC
+cosmic-files = Cosmetic
 comment = Gerenciador de arquivos do COSMIC
 keywords = Pasta;Gestor;
 empty-folder = Pasta vazia
@@ -190,7 +190,7 @@ list-view = Visualização em lista
 show-hidden-files = Mostrar ficheiros ocultos
 list-directories-first = Listar primeiro os diretórios
 menu-settings = Definições...
-menu-about = Acerca do Ficheiros COSMIC...
+menu-about = Acerca do Cosmetic...
 repository = Repositório
 support = Suporte
 details = Detalhes

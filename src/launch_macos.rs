@@ -144,10 +144,10 @@ mod tests {
     fn a_bundled_executable_resolves_its_resources_directory() {
         assert_eq!(
             bundle_resources(Path::new(
-                "/Applications/COSMIC Files.app/Contents/MacOS/cosmic-files"
+                "/Applications/Cosmetic.app/Contents/MacOS/cosmic-files"
             )),
             Some(PathBuf::from(
-                "/Applications/COSMIC Files.app/Contents/Resources"
+                "/Applications/Cosmetic.app/Contents/Resources"
             ))
         );
     }
@@ -170,10 +170,10 @@ mod tests {
     fn the_bundle_share_directory_is_searched_before_the_inherited_entries() {
         assert_eq!(
             data_dirs_with(
-                Path::new("/Applications/COSMIC Files.app/Contents/Resources/share"),
+                Path::new("/Applications/Cosmetic.app/Contents/Resources/share"),
                 Some("/opt/homebrew/share:/usr/share")
             ),
-            "/Applications/COSMIC Files.app/Contents/Resources/share:/opt/homebrew/share:/usr/share"
+            "/Applications/Cosmetic.app/Contents/Resources/share:/opt/homebrew/share:/usr/share"
         );
     }
 
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn a_bundle_opened_on_a_directory_keeps_that_directory() {
-        // `open -a "COSMIC Files" <dir>` and a drop onto the Dock icon both run
+        // `open -a "Cosmetic" <dir>` and a drop onto the Dock icon both run
         // the bundle with a real working directory; only "/" means Finder.
         assert_eq!(
             startup_dir(

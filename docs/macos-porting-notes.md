@@ -291,8 +291,8 @@ All three bite a file manager harder than a terminal:
 
 ### 5.5 Bundling in this repo
 
-`scripts/macos-bundle.sh` builds `target/macos/COSMIC Files.app` — the space is
-deliberate, it is the name the Dock and the menu bar show. The script is the single
+`scripts/macos-bundle.sh` builds `target/macos/Cosmetic.app`. The bundle's
+name is the name the Dock and the menu bar show. The script is the single
 command the bundle is produced by; it takes the release binary from
 `$CARGO_TARGET_DIR/release/cosmic-files` and builds it with the macOS feature set if it
 is not there.

@@ -1,4 +1,4 @@
-cosmic-files = COSMIC 파일
+cosmic-files = Cosmetic
 empty-folder = 빈 폴더
 empty-folder-hidden = 빈 폴더 (숨겨진 항목 있음)
 filesystem = 파일 시스템
@@ -102,7 +102,7 @@ view = 보기
 grid-view = 그리드 보기
 list-view = 목록 보기
 menu-settings = 설정...
-menu-about = COSMIC 파일 정보...
+menu-about = Cosmetic 정보...
 connect = 연결
 read-execute = 읽기 및 실행
 item-modified = 마지막 수정 일자: { $modified }

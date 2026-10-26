@@ -1,4 +1,4 @@
-cosmic-files = ตัวจัดการไฟล์ COSMIC
+cosmic-files = Cosmetic
 empty-folder = แฟ้มเปล่า
 empty-folder-hidden = แฟ้มเปล่า (มีแฟ้มที่ซ่อนอยู่)
 no-results = ไม่พบผลลัพธ์
@@ -287,7 +287,7 @@ show-hidden-files = แสดงไฟล์ที่ซ่อนอยู่
 list-directories-first = แสดงแฟ้มก่อนเสมอ
 gallery-preview = ตัวอย่างแบบแกลเลอรี่
 menu-settings = การตั้งค่า...
-menu-about = เกี่ยวกับตัวจัดการไฟล์ COSMIC...
+menu-about = เกี่ยวกับ Cosmetic...
 
 ## Sort
 
