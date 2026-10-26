@@ -7679,7 +7679,7 @@ impl Tab {
             .then(|| Element::from(widget::column::with_children(drag_items)));
 
         let mouse_area = mouse_area::MouseArea::new(column.padding([0, space_s]))
-            .with_id(Id::new("list-view"))
+            .with_id(Id::new(format!("{}-list-view", self.scrollable_id)))
             .on_press(|_| Message::Click(None))
             .on_auto_scroll(Message::AutoScroll)
             .on_drag(move |rect_opt| self.on_drag(rect_opt))
@@ -7736,8 +7736,10 @@ impl Tab {
                     .collect::<Box<[PathBuf]>>()
             })
             .unwrap_or_default();
-        let item_view =
-            DndSource::<Message, ClipboardCopy>::with_id(item_view, Id::new("tab-view"));
+        let item_view = DndSource::<Message, ClipboardCopy>::with_id(
+            item_view,
+            Id::new(format!("{}-tab-view", self.scrollable_id)),
+        );
 
         let view = self.config.view;
         let item_view = match drag_list {

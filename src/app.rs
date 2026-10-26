@@ -17,7 +17,9 @@ use cosmic::iced::widget::button::focus;
 use cosmic::iced::widget::scrollable;
 use cosmic::iced::widget::scrollable::AbsoluteOffset;
 use cosmic::iced::window::{self, Event as WindowEvent, Id as WindowId};
-use cosmic::iced::{self, Alignment, Event, Length, Size, Subscription, event, mouse, stream};
+use cosmic::iced::{
+    self, Alignment, Border, Color, Event, Length, Size, Subscription, event, mouse, stream,
+};
 #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
 use cosmic::iced::{
     Limits, Point, Rectangle,
@@ -84,6 +86,7 @@ use crate::operation::{
     copy_unique_path,
 };
 use crate::spawn_detached::spawn_detached;
+use crate::split_view::{self, Side, SplitView};
 use crate::status_bar::{self, StatusBar};
 use crate::tab::{
     self, HOVER_DURATION, HeadingOptions, ItemMetadata, Location, SORT_OPTION_FALLBACK,
@@ -272,6 +275,7 @@ pub enum Action {
     Settings,
     Share,
     ShowPackageContents,
+    SplitView,
     TabClose,
     TabNew,
     TabNext,
@@ -369,6 +373,7 @@ impl Action {
                 Message::TabMessage(entity_opt, tab::Message::ShowPackageContents)
             }
             Self::Share => Message::Share(entity_opt, ShareVia::Picker),
+            Self::SplitView => Message::SplitView(split_view::Message::Toggle),
             Self::TabClose => Message::TabClose(entity_opt),
             Self::TabNew => Message::TabNew,
             Self::TabNext => Message::TabNext,
@@ -617,6 +622,7 @@ pub enum Message {
     SetShowDetails(bool),
     SetShowRecents(bool),
     SetTypeToSearch(TypeToSearch),
+    SplitView(split_view::Message),
     StatusBar(status_bar::Message),
     /// Share the selected items through the system share menu or AirDrop. macOS only.
     Share(Option<Entity>, ShareVia),
@@ -956,6 +962,10 @@ pub struct App {
     history: crate::undo::History,
     progress_operations: BTreeSet<u64>,
     status_bar: StatusBar,
+    /// The second pane, when two tabs show side by side.
+    split_view: Option<SplitView>,
+    /// The pane the pointer last moved into.
+    split_hover: Option<Entity>,
     complete_operations: BTreeMap<u64, Operation>,
     failed_operations: BTreeMap<u64, (Operation, Controller, String)>,
     /// Set once the last close was a quit, so that [`Message::MaybeExit`] ends the process as
@@ -973,7 +983,6 @@ pub struct App {
     /// sitting beside it, as long as the tab is still alone and has not been navigated.
     #[cfg(target_os = "macos")]
     launch_tab: Option<(Entity, Location)>,
-    scrollable_id: widget::Id,
     /// Physical pixels per logical pixel, per window. A window missing from the map has not
     /// reported its scale factor yet and is treated as 1.0.
     scale_factors: FxHashMap<window::Id, f32>,
@@ -1000,6 +1009,17 @@ pub struct App {
     auto_scroll_speed: Option<i16>,
     file_dialog_opt: Option<Dialog<Message>>,
     clipboard_cache: ClipboardCache,
+}
+
+/// A scroll id of its own for a new main-window tab.
+///
+/// libcosmic moves widget state between trees by id name, and an unnamed id prints as
+/// "Undefined". Two panes of a split whose ids printed the same would take each other's
+/// state, and the view would panic. The tab view builds its other widget names from this one.
+fn tab_scroll_id() -> widget::Id {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    widget::Id::new(format!("File Scrollable {n}"))
 }
 
 impl App {
@@ -1452,20 +1472,128 @@ impl App {
         (entity, Task::batch(tasks))
     }
 
+    /// The (left, right) tabs of the split, or `None` when one tab fills the window.
+    ///
+    /// A split whose other tab is gone, or has become the active tab, counts as no split.
+    fn split_panes(&self) -> Option<(Entity, Entity)> {
+        let split = self.split_view?;
+        let active = self.tab_model.active();
+        (split.other != active && self.tab_model.data::<Tab>(split.other).is_some())
+            .then(|| split.panes(active))
+    }
+
+    fn split_view_update(&mut self, message: split_view::Message) -> Task<Message> {
+        match message {
+            split_view::Message::Toggle => {
+                let active = self.tab_model.active();
+                let mut tasks = Vec::with_capacity(3);
+                if let Some((left, right)) = self.split_panes() {
+                    self.split_view = None;
+                    tasks.push(self.restore_scroll(left));
+                    tasks.push(self.restore_scroll(right));
+                    return Task::batch(tasks);
+                }
+                let Some(position) = self.tab_model.position(active) else {
+                    return Task::none();
+                };
+                // Pair with the next tab, or the previous one when this is the last.
+                let next = self.tab_model.entity_at(position + 1);
+                let previous = position
+                    .checked_sub(1)
+                    .and_then(|before| self.tab_model.entity_at(before));
+                let (other, other_side) = match (next, previous) {
+                    (Some(next), _) => (next, Side::Right),
+                    (None, Some(previous)) => (previous, Side::Left),
+                    (None, None) => {
+                        // A lone tab gets a copy of itself on the right.
+                        let Some(location) = self
+                            .tab_model
+                            .data::<Tab>(active)
+                            .map(|tab| tab.location.clone())
+                        else {
+                            return Task::none();
+                        };
+                        let (other, task) =
+                            self.open_tab_entity(location, false, None, tab_scroll_id(), None);
+                        tasks.push(task);
+                        (other, Side::Right)
+                    }
+                };
+                self.split_view = Some(SplitView { other, other_side });
+                tasks.push(self.restore_scroll(active));
+                tasks.push(self.restore_scroll(other));
+                Task::batch(tasks)
+            }
+            split_view::Message::Focus(entity) => {
+                if self.split_view.is_some_and(|split| split.other == entity) {
+                    return self.update(Message::TabActivate(entity));
+                }
+                Task::none()
+            }
+            split_view::Message::Hover(entity) => {
+                self.split_hover = Some(entity);
+                Task::none()
+            }
+        }
+    }
+
+    /// Move focus to the pane under the pointer. A gesture calls this first, so a swipe or a
+    /// zoom acts on the pane it was made over rather than the one with focus.
+    #[cfg(target_os = "macos")]
+    fn focus_hovered_pane(&mut self) -> Task<Message> {
+        match self.split_hover {
+            Some(entity) if self.split_view.is_some_and(|split| split.other == entity) => {
+                self.update(Message::TabActivate(entity))
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// The tab an operation's new items belong in: a visible pane showing the folder they landed
+    /// in, or else the active tab.
+    fn operation_tab(&self, op_sel: &OperationSelection) -> Entity {
+        let active = self.tab_model.active();
+        let Some(folder) = op_sel.selected.first().and_then(|path| path.parent()) else {
+            return active;
+        };
+        let shows_folder = |entity: Entity| {
+            self.tab_model
+                .data::<Tab>(entity)
+                .is_some_and(|tab| tab.location.path_opt().is_some_and(|path| path == folder))
+        };
+        match self.split_panes() {
+            Some((left, right)) if !shows_folder(active) => [left, right]
+                .into_iter()
+                .find(|&entity| shows_folder(entity))
+                .unwrap_or(active),
+            _ => active,
+        }
+    }
+
+    /// Scroll a tab's view back to where it was. A pane that moves into or out of a split is
+    /// rebuilt, and starts at the top otherwise.
+    fn restore_scroll(&self, entity: Entity) -> Task<Message> {
+        let Some(tab) = self.tab_model.data::<Tab>(entity) else {
+            return Task::none();
+        };
+        let scroll = tab.scroll_opt.unwrap_or_default();
+        scrollable::scroll_to(
+            tab.scrollable_id.clone(),
+            AbsoluteOffset {
+                x: Some(scroll.x),
+                y: Some(scroll.y),
+            },
+        )
+    }
+
     fn open_tab(
         &mut self,
         location: Location,
         activate: bool,
         selection_paths: Option<Vec<PathBuf>>,
     ) -> Task<Message> {
-        self.open_tab_entity(
-            location,
-            activate,
-            selection_paths,
-            self.scrollable_id.clone(),
-            None,
-        )
-        .1
+        self.open_tab_entity(location, activate, selection_paths, tab_scroll_id(), None)
+            .1
     }
 
     // This wrapper ensures that local folders use trash and remote folders permanently delete with a dialog
@@ -1767,15 +1895,21 @@ impl App {
         }
         // Potentially show a notification
         commands.push(self.update_notification());
-        // Operations change free space
-        commands.push(
-            status_bar::refresh(
-                self.tab_model
-                    .active_data::<Tab>()
-                    .and_then(|tab| tab.location.path_opt().cloned()),
-            )
-            .map(|m| cosmic::action::app(Message::StatusBar(m))),
-        );
+        // Operations change free space, on either pane of a split
+        let visible = match self.split_panes() {
+            Some((left, right)) => vec![left, right],
+            None => vec![self.tab_model.active()],
+        };
+        for entity in visible {
+            commands.push(
+                status_bar::refresh(
+                    self.tab_model
+                        .data::<Tab>(entity)
+                        .and_then(|tab| tab.location.path_opt().cloned()),
+                )
+                .map(|m| cosmic::action::app(Message::StatusBar(m))),
+            );
+        }
         // Rescan and select based on operation
         commands.push(self.rescan_operation_selection(op_sel));
         // Manually rescan any trash tabs after any operation is completed
@@ -1904,7 +2038,7 @@ impl App {
 
     fn rescan_operation_selection(&mut self, op_sel: OperationSelection) -> Task<Message> {
         log::info!("rescan_operation_selection {op_sel:?}");
-        let entity = self.tab_model.active();
+        let entity = self.operation_tab(&op_sel);
         let Some(tab) = self.tab_model.data::<Tab>(entity) else {
             return Task::none();
         };
@@ -3172,12 +3306,13 @@ impl Application for App {
             history: crate::undo::History::default(),
             progress_operations: BTreeSet::new(),
             status_bar: StatusBar::default(),
+            split_view: None,
+            split_hover: None,
             complete_operations: BTreeMap::new(),
             failed_operations: BTreeMap::new(),
             quit_requested: false,
             #[cfg(target_os = "macos")]
             last_tab_location: None,
-            scrollable_id: widget::Id::new("File Scrollable"),
             scale_factors: FxHashMap::default(),
             search_id: widget::Id::new("File Search"),
             size: None,
@@ -4454,9 +4589,11 @@ impl Application for App {
                 } else {
                     Message::ZoomOut(None)
                 };
-                let tasks = (0..steps.abs())
-                    .map(|_| self.update(message.clone()))
-                    .collect::<Vec<_>>();
+                let mut tasks = Vec::new();
+                if steps != 0 {
+                    tasks.push(self.focus_hovered_pane());
+                }
+                tasks.extend((0..steps.abs()).map(|_| self.update(message.clone())));
                 return Task::batch(tasks);
             }
             #[cfg(target_os = "macos")]
@@ -4468,6 +4605,7 @@ impl Application for App {
                         crate::gesture::Direction::Back => tab::Message::GoPrevious,
                         crate::gesture::Direction::Forward => tab::Message::GoNext,
                     };
+                    tasks.push(self.focus_hovered_pane());
                     tasks.push(self.update(Message::TabMessage(None, tab_message)));
                 }
                 // Ctrl+scroll zooms. AppKit's events carry logical points and say outright
@@ -4480,6 +4618,9 @@ impl Application for App {
                     } else {
                         Message::ZoomOut(None)
                     };
+                    if steps != 0 {
+                        tasks.push(self.focus_hovered_pane());
+                    }
                     tasks.extend((0..steps.abs()).map(|_| self.update(message.clone())));
                 }
                 return Task::batch(tasks);
@@ -5496,6 +5637,7 @@ impl Application for App {
                 config_set!(context_quick_bar, context_quick_bar);
                 return self.update_config();
             }
+            Message::SplitView(message) => return self.split_view_update(message),
             Message::StatusBar(message) => {
                 if let status_bar::Message::Toggle = message {
                     config_set!(show_status_bar, !self.config.show_status_bar);
@@ -5518,6 +5660,15 @@ impl Application for App {
             }
             Message::TabActivate(entity) => {
                 let mut tasks = vec![];
+
+                // In a split, picking the other pane's tab moves focus there. Any other tab
+                // replaces the focused pane.
+                let active = self.tab_model.active();
+                if let Some(split) = &mut self.split_view
+                    && split.other == entity
+                {
+                    split.swap(active);
+                }
 
                 // Activate new tab
                 self.tab_model.activate(entity);
@@ -5572,6 +5723,17 @@ impl Application for App {
                 let mut tasks = Vec::with_capacity(2);
 
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+
+                // Closing either pane's tab ends the split. The pane that stays keeps or takes focus.
+                if let Some(split) = self.split_view
+                    && let Some((left, right)) = self.split_panes()
+                    && (entity == left || entity == right)
+                {
+                    self.split_view = None;
+                    if entity != split.other {
+                        tasks.push(self.update(Message::TabActivate(split.other)));
+                    }
+                }
 
                 // If the last tab is closed, close the window
                 // Otherwise, activate closest item
@@ -5668,7 +5830,9 @@ impl Application for App {
                             }
                         }
                         tab::Command::ChangeLocation(tab_title, tab_path, selection_paths) => {
-                            self.activate_nav_model_location(&tab_path);
+                            if entity == self.tab_model.active() {
+                                self.activate_nav_model_location(&tab_path);
+                            }
 
                             self.tab_model.text_set(entity, tab_title);
                             // clear the prefix selection buffer when changing location
@@ -6688,6 +6852,16 @@ impl Application for App {
                 position,
             }) => {
                 _ = self.tab_model.reorder(dragged, target, position);
+                // The panes follow the tab bar's order.
+                let active = self.tab_model.active();
+                if let Some(split) = &mut self.split_view {
+                    split.other_side =
+                        if self.tab_model.position(split.other) > self.tab_model.position(active) {
+                            Side::Right
+                        } else {
+                            Side::Left
+                        };
+                }
             }
         }
 
@@ -7764,6 +7938,7 @@ impl Application for App {
             &self.modifiers,
             &self.key_binds,
             self.clipboard_has_content(),
+            self.split_panes().is_some(),
             self.history.next_undo(),
             self.history.next_redo(),
         )]
@@ -7850,10 +8025,11 @@ impl Application for App {
             );
         }
 
-        let entity = self.tab_model.active();
-        if let Some(tab) = self.tab_model.data::<Tab>(entity) {
-            let tab_view = tab
-                .view(
+        let active = self.tab_model.active();
+        let tab_view = |entity: Entity| {
+            let tab = self.tab_model.data::<Tab>(entity)?;
+            Some(
+                tab.view(
                     &self.key_binds,
                     &self.modifiers,
                     self.clipboard_has_content(),
@@ -7861,10 +8037,47 @@ impl Application for App {
                     self.config.context_quick_bar,
                     Some(&self.mime_app_cache),
                 )
-                .map(move |message| Message::TabMessage(Some(entity), message));
+                .map(move |message| Message::TabMessage(Some(entity), message)),
+            )
+        };
+        if let Some((left, right)) = self.split_panes() {
+            // An accent outline marks the pane that shortcuts and paste act on.
+            let pane = |entity: Entity| {
+                let focused = entity == active;
+                let framed = widget::container(tab_view(entity)?)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(1)
+                    .style(move |theme: &cosmic::Theme| {
+                        let cosmic = theme.cosmic();
+                        let color = if focused {
+                            cosmic.accent_color().into()
+                        } else {
+                            Color::TRANSPARENT
+                        };
+                        widget::container::Style {
+                            border: Border {
+                                color,
+                                width: 1.0,
+                                radius: cosmic.radius_s().into(),
+                            },
+                            ..Default::default()
+                        }
+                    });
+                Some(split_view::pane(
+                    framed,
+                    Message::SplitView(split_view::Message::Focus(entity)),
+                    Message::SplitView(split_view::Message::Hover(entity)),
+                ))
+            };
+            let panes = [pane(left), pane(right)];
+            tab_column = tab_column.push(
+                widget::row::with_children(panes.into_iter().flatten())
+                    .spacing(space_xxs)
+                    .padding([0, space_xxs]),
+            );
+        } else if let Some(tab_view) = tab_view(active) {
             tab_column = tab_column.push(tab_view);
-        } else {
-            //TODO
         }
 
         // The toaster is added on top of an empty element to ensure that it does not override context menus
