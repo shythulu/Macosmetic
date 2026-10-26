@@ -125,6 +125,14 @@ pub(crate) static REPLACE_BUTTON_ID: LazyLock<widget::Id> =
 /// by [`crate::theme_catalog`], which follow them.
 const BUILT_IN_APP_THEMES: usize = 3;
 
+/// The narrowest and widest the sidebar can be dragged to.
+const NAV_BAR_WIDTH_MIN: f32 = 140.0;
+const NAV_BAR_WIDTH_MAX: f32 = 480.0;
+
+fn clamp_nav_bar_width(width: f32) -> f32 {
+    width.clamp(NAV_BAR_WIDTH_MIN, NAV_BAR_WIDTH_MAX)
+}
+
 #[derive(Clone, Debug)]
 pub enum Mode {
     App,
@@ -593,6 +601,12 @@ pub enum Message {
     /// Show the selected items in a Finder window. macOS only.
     RevealInFinder(Option<Entity>),
     SaveSortNames,
+    /// The sidebar's right edge was dragged; the width it would have.
+    NavBarResize(f32),
+    /// The drawer's left edge was dragged; the width it would have.
+    ContextDrawerResize(f32),
+    /// A drag on a panel edge ended: write both widths to the state file.
+    SavePanelWidths,
     ScrollTab(i16),
     SearchActivate,
     SearchClear,
@@ -3038,6 +3052,12 @@ impl Application for App {
     /// Creates the application, and optionally emits command on initialize.
     fn init(mut core: Core, flags: Self::Flags) -> (Self, Task<Self::Message>) {
         core.window.context_is_overlay = false;
+        core.set_nav_bar_width(
+            flags
+                .state
+                .nav_bar_width
+                .map(|width| clamp_nav_bar_width(f32::from(width))),
+        );
         match flags.mode {
             Mode::App => {
                 core.window.show_context = flags.config.show_details;
@@ -3272,15 +3292,25 @@ impl Application for App {
                 .on_surface_action(|action| cosmic::Action::Surface(action.flatten()))
         }
 
-        let mut nav = nav.into_container();
+        let nav = nav.into_container().height(Length::Fill);
 
-        if !self.core.is_condensed() {
-            nav = nav.max_width(280);
+        // A condensed window shows the sidebar on its own, so a dragged width means nothing.
+        if self.core.is_condensed() {
+            return Some(Element::from(nav.width(Length::Shrink)));
         }
 
-        Some(Element::from(
-            nav.width(Length::Shrink).height(Length::Fill),
-        ))
+        let nav = match self.state.nav_bar_width {
+            Some(width) => nav.width(Length::Fixed(clamp_nav_bar_width(f32::from(width)))),
+            None => nav.width(Length::Shrink).max_width(280),
+        };
+
+        Some(
+            widget::resize_edge(nav, widget::resize_edge::Edge::Right, |width| {
+                cosmic::Action::App(Message::NavBarResize(width))
+            })
+            .on_release(cosmic::Action::App(Message::SavePanelWidths))
+            .into(),
+        )
     }
 
     fn nav_context_menu(&self) -> Option<Vec<widget::menu::Tree<cosmic::Action<Self::Message>>>> {
@@ -6613,6 +6643,27 @@ impl Application for App {
             Message::Surface(action) => {
                 return cosmic::task::message(cosmic::Action::Surface(action));
             }
+            Message::NavBarResize(width) => {
+                let width = clamp_nav_bar_width(width).round();
+                self.state.nav_bar_width = Some(width as u16);
+                self.core.set_nav_bar_width(Some(width));
+            }
+            Message::ContextDrawerResize(width) => {
+                // libcosmic clamps the drawer to the window; this only keeps the number sane.
+                self.state.context_drawer_width = Some(width.clamp(0.0, 4096.0).round() as u16);
+            }
+            Message::SavePanelWidths => {
+                if let Some(state_handler) = self.state_handler.as_ref() {
+                    for (key, value) in [
+                        ("nav_bar_width", self.state.nav_bar_width),
+                        ("context_drawer_width", self.state.context_drawer_width),
+                    ] {
+                        if let Err(err) = state_handler.set(key, value) {
+                            log::warn!("failed to save {key}: {err:?}");
+                        }
+                    }
+                }
+            }
             Message::SaveSortNames => {
                 self.must_save_sort_names = false;
                 if let Some(state_handler) = self.state_handler.as_ref()
@@ -6648,7 +6699,7 @@ impl Application for App {
             return None;
         }
 
-        Some(match &self.context_page {
+        let drawer = match &self.context_page {
             ContextPage::About => context_drawer::about(
                 &self.about,
                 |url| Message::LaunchUrl(url.to_string()),
@@ -6739,6 +6790,14 @@ impl Application for App {
                     .leading_icon(widget::icon::from_name("go-previous-symbolic"))
                     .on_press(Message::ToggleContextPage(self.icon_themes_return.clone()))
             }),
+        };
+
+        let drawer = drawer
+            .on_resize(Message::ContextDrawerResize)
+            .on_resize_end(Message::SavePanelWidths);
+        Some(match self.state.context_drawer_width {
+            Some(width) => drawer.width(f32::from(width)),
+            None => drawer,
         })
     }
 

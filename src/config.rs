@@ -196,6 +196,10 @@ pub enum TypeToSearch {
 #[serde(default)]
 pub struct State {
     pub sort_names: FxOrderMap<String, (HeadingOptions, bool)>,
+    /// The sidebar width the user dragged to. `None` keeps libcosmic's own sizing.
+    pub nav_bar_width: Option<u16>,
+    /// The drawer width the user dragged to, shared by every drawer page.
+    pub context_drawer_width: Option<u16>,
 }
 
 impl Default for State {
@@ -207,6 +211,8 @@ impl Default for State {
                     (HeadingOptions::Modified, false),
                 )
             })),
+            nav_bar_width: None,
+            context_drawer_width: None,
         }
     }
 }
