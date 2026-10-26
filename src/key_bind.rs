@@ -88,6 +88,7 @@ pub fn ctrl_key_binds(mode: &tab::Mode) -> HashMap<KeyBind, Action> {
         bind!([Ctrl], Key::Character("t".into()), TabNew);
         bind!([Ctrl], Key::Named(Named::Tab), TabNext);
         bind!([Ctrl, Shift], Key::Named(Named::Tab), TabPrev);
+        bind!([Ctrl], Key::Character("\\".into()), SplitView);
         bind!([Ctrl], Key::Character("q".into()), WindowClose);
         bind!([Ctrl], Key::Character("n".into()), WindowNew);
     }
@@ -194,6 +195,8 @@ pub fn cmd_key_binds(mode: &tab::Mode) -> HashMap<KeyBind, Action> {
         bind!([Super], Key::Character("t".into()), TabNew);
         bind!([Ctrl], Key::Named(Named::Tab), TabNext);
         bind!([Ctrl, Shift], Key::Named(Named::Tab), TabPrev);
+        // Finder has no split view, so it keeps the key it has everywhere else.
+        bind!([Ctrl], Key::Character("\\".into()), SplitView);
         // Cmd+Q ends the process; Cmd+W and Cmd+Shift+W only close a tab and a window, which
         // on macOS leaves the application running with nothing on screen.
         bind!([Super], Key::Character("q".into()), Quit);
@@ -739,6 +742,7 @@ unit_actions![
     Settings,
     Share,
     ShowPackageContents,
+    SplitView,
     TabClose,
     TabNew,
     TabNext,
@@ -1179,8 +1183,8 @@ mod tests {
             assert_eq!(&action.config_name(), name);
             assert_eq!(Action::from_config_name(name), Some(*action));
         }
-        // 74 payload-free variants plus the parameterized ones below.
-        assert_eq!(UNIT_ACTIONS.len(), 74);
+        // 75 payload-free variants plus the parameterized ones below.
+        assert_eq!(UNIT_ACTIONS.len(), 75);
     }
 
     #[test]

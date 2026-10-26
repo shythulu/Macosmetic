@@ -59,6 +59,7 @@ mod open_bar;
 mod quick_bar;
 mod share_bar;
 mod spawn_detached;
+mod split_view;
 #[cfg(target_os = "macos")]
 pub(crate) mod spotlight_macos;
 mod status_bar;

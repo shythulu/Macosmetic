@@ -335,6 +335,7 @@ search-application = Search by app name
 ## Show details
 show-details = Show details
 show-status-bar = Show status bar
+split-view = Show tabs side by side
 type = Type: {$mime}
 item-kind = Kind: {$kind}
 item-where = Where: {$path}

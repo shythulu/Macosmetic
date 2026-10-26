@@ -100,7 +100,7 @@ TabClose                  TabNew                    TabNext
 TabPrev                   TabViewGrid               TabViewList
 ToggleFoldersFirst        ToggleShowHidden          WindowClose
 WindowNew                 ZoomDefault               ZoomIn
-ZoomOut                   Recents
+ZoomOut                   Recents                   SplitView
 ```
 
 Four actions take arguments, written in parentheses:
@@ -163,8 +163,8 @@ Selection and navigation keys are the same on every platform: the arrow keys, `S
 | `TabViewList` | `⌘2` | `Ctrl+1` |
 
 The rest keep their usual keys, because Finder has no equivalent: `Ctrl+Enter` opens in a new tab,
-`Shift+Enter` in a new window, `Ctrl+Tab` and `Ctrl+Shift+Tab` switch tabs, `Ctrl+Space` previews
-and `Space` opens the gallery. `Cmd+Space` is deliberately left alone: it belongs to Spotlight.
+`Shift+Enter` in a new window, `Ctrl+Tab` and `Ctrl+Shift+Tab` switch tabs, `Ctrl+\` shows two tabs
+side by side, `Ctrl+Space` previews and `Space` opens the gallery. `Cmd+Space` is deliberately left alone: it belongs to Spotlight.
 
 `Quit` and `WindowClose` are two different things on macOS, as they are in every Mac app:
 `WindowClose` closes the window and leaves the application in the Dock, where clicking the icon

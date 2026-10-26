@@ -8,6 +8,16 @@ This document provides a regression testing checklist for COSMIC Files. The chec
 
 - [ ] Middle-click opens directory in a new tab (not focused).
 - [ ] Open two scrollable tabs. Scroll one tab, then switch to the other tab; it should not have scrolled.
+
+### Split view
+
+- [ ] With one tab, View -> Show tabs side by side (`Ctrl+\`) opens a copy of the folder on the right.
+- [ ] With several tabs, it pairs the active tab with the next one. The focused pane has an accent outline.
+- [ ] Clicking anywhere in the other pane moves the outline there. Cmd+C / Cmd+V act on the outlined pane.
+- [ ] Dragging a file from one pane to the other copies or moves it.
+- [ ] Scrolling or arrow-keying in one pane never scrolls the other.
+- [ ] Clicking a tab that is not shown replaces the outlined pane. Clicking the other pane's tab only moves focus.
+- [ ] Closing either pane's tab ends the split. Toggling again goes back to one pane.
 - [ ] Hover over the top item in the folder, then scroll down until it's out of view (while still hovered).
       On scrolling back up (with the mouse in a different position), the item should not have the hover highlight.
 - [ ] Right-click an item in the sidebar. No visual change should occur with the rest of the items.

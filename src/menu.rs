@@ -966,6 +966,7 @@ pub fn menu_bar<'a>(
     modifiers: &Modifiers,
     key_binds: &HashMap<KeyBind, Action>,
     clipboard_paste_available: bool,
+    split_view: bool,
     next_undo: Option<crate::undo::Kind>,
     next_redo: Option<crate::undo::Kind>,
 ) -> Element<'a, Message> {
@@ -1139,6 +1140,12 @@ pub fn menu_bar<'a>(
                             None,
                             config.show_status_bar,
                             Action::ToggleStatusBar,
+                        ),
+                        menu::Item::CheckBox(
+                            fl!("split-view"),
+                            None,
+                            split_view,
+                            Action::SplitView,
                         ),
                         menu::Item::Divider,
                         menu_button_optional(
